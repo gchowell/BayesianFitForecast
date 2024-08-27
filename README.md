@@ -27,3 +27,13 @@ Once the model fitting is complete, use the `run_analyzeResults.R` script to gen
 ### 4. Example Use Case
 
 For a demonstration of the toolbox’s capabilities, refer to the example provided in the repository, which analyzes the 1918 influenza pandemic in San Francisco using the SEIR model.
+
+## License
+
+This project is licensed under the **Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0)**. See the [LICENSE](LICENSE) file for details.
+
+## Citation
+
+If you use this toolbox in your research, please cite the following paper:
+
+@article{Karami2024BayesianFitForecast, title={BayesianFitForecast: An R Toolbox for Parameter Estimation and Forecasting with Quantified Uncertainty in Ordinary Differential Equation Models}, author={Hamed Karami and Amanda Bleichrodt and Ruiyan Luo and Gerardo Chowell}, journal={Biostatistics}, year={2024}, volume={XX}, pages={1-23}, doi={DOI HERE} }
