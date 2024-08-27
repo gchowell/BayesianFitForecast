@@ -36,4 +36,3 @@ This project is licensed under the **Creative Commons Attribution-NonCommercial-
 
 If you use this toolbox in your research, please cite the following paper:
 
-@article{Karami2024BayesianFitForecast, title={BayesianFitForecast: An R Toolbox for Parameter Estimation and Forecasting with Quantified Uncertainty in Ordinary Differential Equation Models}, author={Hamed Karami and Amanda Bleichrodt and Ruiyan Luo and Gerardo Chowell}, journal={Biostatistics}, year={2024}, volume={XX}, pages={1-23}, doi={DOI HERE} }
