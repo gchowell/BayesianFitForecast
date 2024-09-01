@@ -234,7 +234,7 @@ stan_code <- paste0(stan_code,"
     // Composite quantities
     ", paste0("    real ", names(composite_expressions), " = ", 
               sapply(composite_expressions, function(expr) expr), 
-              ";\n", collapse = ""),)}
+              ";\n", collapse = ""))}
     stan_code<-paste0(stan_code,"}")
 }
 

@@ -4,7 +4,7 @@
 calibrationperiods <- c(17)
 
 # Set the calibration period and forecasting horizon
-forecastinghorizon <- 0
+forecastinghorizon <- 10
 
 model_name <- "Bayesian-uniform"
 
@@ -18,7 +18,7 @@ vars <- c("S", "E", "I", "R", "C")
 # kappa: the incubation rate. the range for the flu 1918 is (0,2)
 # rho: the recovery proportion rate. the range for the flu 1918 is (0,1)
 # N: The population size. It is a fixed number for this case study: 550,000
-params <- c("beta", "gamma", "kappa", "rho","N")
+params <- c("beta", "gamma", "kappa", "rho","N","i0")
 
 ode_system <- '
   diff_var1 = -params1 * vars3 * vars1 / params5
@@ -28,7 +28,7 @@ ode_system <- '
   diff_var5 = params4 * params3 * vars2'
 
 # Indicate if a parameter is fixed
-paramsfix <- c(0,1,1,1,1)
+paramsfix <- c(0,1,1,1,1,0)
 
 # To generate interesting parameters
 composite_expressions <- list(
@@ -42,7 +42,7 @@ fitting_index <- 5
 fitting_diff <- 1
 
 #Select the type of error structure 1.Negative binomial 2. Normal 3. Poisson
-errstrc <- 1
+errstrc <- 2
 
 
 #Define your input file
@@ -65,29 +65,31 @@ params2_prior <- 1/4.1
 params3_prior <- 1/1.9
 params4_prior <- 1
 params5_prior <- 550000
+params6_prior <- "normal(0, 10)"
 
 # Define the lower bound of parameters
 params1_LB <- 0
 params2_LB <- 0
 params3_LB <- 0
 params4_LB <- 0
+params6_LB <- 0
 
 # Define the upper bound of parameters
 params1_UB <- NA
 params2_UB <- NA
 params3_UB <- NA
 params4_UB <- 1
-
+params6_UB <- 100
 # Select the prior distribution when using a normal or negative binomial 
 # error structure
 normalerror_prior <- "cauchy(0, 2.5)"
 negbinerror_prior <- "exponential(5)"
 
 # Select 0 if you want the initial condition be estimated as well. Otherwise, select 1
-vars.init <- 1
+vars.init <- 0
 
 # Enter the initial condition for variables
-Ic = c(549996,0,4,0,4)
+Ic = c("N-i0",0,"i0",0,"i0")
 
 # number of MCMC steps
 niter <- 1000

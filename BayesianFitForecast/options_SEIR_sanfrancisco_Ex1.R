@@ -32,8 +32,7 @@ paramsfix <- c(0,1,1,1,1)
 
 # To generate interesting parameters
 composite_expressions <- list(
-  R0 = "beta / gamma",
-  recovery_time = "1 / gamma"
+  R0 = "beta / gamma"
 )
 
 # index of the model's variable that will be fit to the observed time series data

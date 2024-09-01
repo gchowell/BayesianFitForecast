@@ -7,7 +7,7 @@ library(openxlsx)
 library(rstan)
 library(ggplot2)
 setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
-source("options_EXP_sanfrancisco_Ex4.R")
+source("options_SEIR_sanfrancisco_Ex5.R")
 
 
 
