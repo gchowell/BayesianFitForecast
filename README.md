@@ -30,7 +30,7 @@ Once the model fitting is complete, use the `run_analyzeResults.R` script to gen
 
 ### 4. Example Use Case
 
-For a demonstration of the toolbox’s capabilities, refer to the example provided in the repository, which analyzes the 1918 influenza pandemic in San Francisco using the SEIR model. The example showcases the toolbox's ability to handle real-world epidemic data, offering insights into model calibration and forecasting performance.
+For a demonstration of the toolbox’s capabilities, refer to the examples provided in the tutorial, which analyzes the 1918 influenza pandemic in San Francisco using the SEIR model. The example showcases the toolbox's ability to handle real-world epidemic data, offering insights into model calibration and forecasting performance.
 
 ## License
 
