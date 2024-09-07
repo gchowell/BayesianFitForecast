@@ -28,9 +28,10 @@ After configuring your model, use the `run_MCMC.R` script to fit the model to yo
 
 Once the model fitting is complete, use the `run_analyzeResults.R` script to generate and analyze the results. This script will produce various outputs, including Excel files with the parameter estimates, performance metrics, and convergence diagnostics.
 
-### 4. Example Use Case
+### 4. Example: SEIR Model for the 1918 Influenza Pandemic
 
-For a demonstration of the toolbox’s capabilities, refer to the examples provided in the tutorial, which analyzes the 1918 influenza pandemic in San Francisco using the SEIR model. The example showcases the toolbox's ability to handle real-world epidemic data, offering insights into model calibration and forecasting performance.
+This toolbox includes several predefined case studies, such as the SEIR model used to analyze the **1918 Influenza Pandemic** in San Francisco. The toolbox allows users to compare different error structures (e.g., Poisson vs. negative binomial) and assess the quality of model fit with performance metrics such as Mean Absolute Error (MAE) and Weighted Interval Score (WIS).
+
 
 ## License
 
