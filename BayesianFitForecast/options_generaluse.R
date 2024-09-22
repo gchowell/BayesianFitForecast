@@ -96,15 +96,16 @@ composite_expressions <- list(
 
 
 # Specify the index of the model variable that will be fitted to the observed time series data.
-# In this case, fitting_index is set to 5, indicating that the model will fit 
-# to the cumulative cases variable (C) from the SEIR model.
-fitting_index <- 5
+# In this case, fitting_index is set to c(3,5), indicating that the model will fit the second 
+#  column in the data to the infectious (I) and the third column in the data to the 
+# cumulative cases variable (C) in the SEIR model.
+fitting_index <- c(3,5)
 
 
 # Boolean variable indicating whether the derivative of the model's fitting variable should be fitted to the data.
 # Here, a value of 1 (true) means the data will be fitted to dC/dt (the rate of change of cumulative cases),
-# while a value of 0 (false) would indicate that the raw values of the fitting variable will be used instead.
-fitting_diff <- 1
+# while a value of 0 (false) would indicate that the data will be fitting to I (the number of infectious people)
+fitting_diff <-c(0,1)
 
 
 
@@ -114,7 +115,7 @@ fitting_diff <- 1
 # 2. Normal: Assumes normally distributed errors, typically used for continuous data.
 # 3. Poisson: Assumes Poisson-distributed errors, commonly used for count data.
 # In this case, errstrc is set to 3, indicating that the Poisson error structure will be used.
-errstrc <- 3
+errstrc <- 1
 
 
 
@@ -131,9 +132,10 @@ caddisease <- "SF1918"
 
 
 # String indicating the type of data being used in the analysis.
-# In this case, datatype is set to "Cases", which signifies that the 
-# model will analyze the number of reported cases associated with the disease.
-datatype <- "Cases"
+# In this case, datatype is set to c("Infectious","newly infected people"), which signifies that the 
+# model will analyze the number of infectious and reported cases associated with the disease.
+# Time series cases names
+series_cases <- c("Infectious","newly infected people")
 
 
 # String indicating the unit of time for the data being analyzed.
@@ -229,8 +231,9 @@ params6_UB <- NA
 # - negbinerror_prior: Prior distribution used when the negative binomial error structure is specified.
 #   Here, an exponential distribution "exponential(5)" is selected, which assumes that the 
 #   counts of events follow a memoryless property, making it suitable for modeling overdispersed count data.
-normalerror_prior <- "cauchy(0, 2.5)"
-negbinerror_prior <- "exponential(5)"
+normalerror1_prior <- "cauchy(0, 2.5)"     # It has been defined but there is no need as errstrc = 1 
+negbinerror1_prior <- "exponential(5)"     # This is used for the first time series
+negbinerror2_prior <- "exponential(5)"     # This is used for the second time series
 
 
 # Select whether to estimate the initial condition for the model.

@@ -87,16 +87,26 @@ generate_stan_file <- function() {
     }
   }
   ##############################################################################
-  # Initialize the variable we are interested in fitting the model
-  if (fitting_diff == 1) {
-    fitting <- ode_rhs(fitting_index, ode_system)
-  } else {
-    fitting <- vars[fitting_index]
+  fitting <- vector("list", length(fitting_index))  # Initialize an empty list to store the fitting results
+  
+  # Iterate through the fitting_index array
+  for (j in seq_along(fitting_index)) {
+    
+    # Check the corresponding value of fitting_diff
+    if (fitting_diff[j] == 1) {
+      # Use ode_rhs if fitting_diff is 1
+      fitting[[j]] <- ode_rhs(fitting_index[j], ode_system)
+    } else {
+      # Otherwise, use the vars value for the fitting index
+      fitting[[j]] <- vars[fitting_index[j]]
+    }
+    
+    # Now, substitute variables in fitting
+    for (i in seq_along(vars)) {
+      fitting[[j]] <- gsub(paste0("\\b", vars[i], "\\b"), paste0("y[t,", i, "]"), fitting[[j]])
+    }
   }
   
-  for (i in seq_along(vars)) {
-    fitting <- gsub(paste0("\\b", vars[i], "\\b"), paste0("y[t,", i, "]"), fitting)
-  }
   ##############################################################################
   # Generate the ODE function for Stan
   ode_function <- "
@@ -141,9 +151,11 @@ data {
     {
     stan_code <- paste0(stan_code, "real y0[", length(vars), "];")
     }
-    stan_code <- paste0(stan_code,"real t0;
-    real ts[n_days + nfst_days];
-    int cases[n_days];\n")
+   stan_code <- paste0(stan_code, "real t0;\nreal ts[n_days + nfst_days];\n")
+  
+  for (i in 1:length(fitting_index)) {
+    stan_code <- paste0(stan_code, "int cases", i, "[n_days];\n")
+  }
   for (i in seq_along(params_integer)) {
     stan_code <- paste0(stan_code,"    int ",params_integer[i],";\n")
   }
@@ -195,12 +207,13 @@ parameters {\n",
                           # Join the bounds with commas if both are present
                           paste(bounds, collapse = ", ")
                         }), "> ", params[paramsfix == 0], ";\n", collapse = ""), 
-                        "    real<lower=0> phi_inv;
-}
+                        paste0("    real<lower=0> phi_inv", 1:length(fitting_index), ";\n", collapse = ""),
+                        "}
     
 transformed parameters {
     real y[n_days + nfst_days, ", length(vars), "];
-    real phi = 1. / phi_inv;\n
+     ", paste0("    real phi", 1:length(fitting_index), " = 1. / phi_inv", 1:length(fitting_index), ";\n", collapse = ""),
+                        " 
     {
     real theta[", length(params[paramsfix == 0]), "];
     ", paste0("    theta[", 1:length(params[paramsfix == 0]), "] = ", params[paramsfix == 0], ";\n", collapse = "")) 
@@ -215,20 +228,27 @@ transformed parameters {
 }
     
 model {
-    ", prior_assignments, "  phi_inv ~")  
+    ", prior_assignments, "  ")
+    stan_code <- paste0(stan_code, paste0("phi_inv", 1:length(fitting_index), " ~ ", 
+                                          sapply(1:length(fitting_index), function(i) {
+                                            get(paste0("negbinerror", i, "_prior"))
+                                          }), ";\n", collapse = ""), 
+                        "  
+  for (t in 1:n_days) {\n")
     
-    stan_code <- paste0(stan_code, negbinerror_prior, ";
-  for (t in 1:n_days) {
-    cases[t] ~ neg_binomial_2(fmax(1e-6,", fitting, "), phi);
-  }
+    stan_code <- paste0(stan_code, paste0("    cases", 1:length(fitting_index), "[t] ~ neg_binomial_2(fmax(1e-6, ", fitting[1:length(fitting_index)], "), phi", 1:length(fitting_index), ");\n", collapse = ""), 
+                        "  }
 }
     
-generated quantities {
-    real pred_cases[n_days + nfst_days];
-    for (t in 1:n_days + nfst_days) {
-        pred_cases[t] = neg_binomial_2_rng(fmax(1e-6,", fitting, "), phi);
-    }
+generated quantities {\n")
+    
+    stan_code <- paste0(stan_code, paste0("    real pred_cases", 1:length(fitting_index), "[n_days + nfst_days];\n", collapse = ""),
+                        "    for (t in 1:n_days + nfst_days) {\n")
+    
+    stan_code <- paste0(stan_code, paste0("        pred_cases", 1:length(fitting_index), "[t] = neg_binomial_2_rng(fmax(1e-6, ", fitting[1:length(fitting_index)], "), phi", 1:length(fitting_index), ");\n", collapse = ""),
+                        "    }
 ")
+    
 if (length(composite_expressions) > 0) {
 stan_code <- paste0(stan_code,"
     // Composite quantities
@@ -262,8 +282,8 @@ parameters {\n",
                         # Join the bounds with commas if both are present
                         paste(bounds, collapse = ", ")
                       }), "> ", params[paramsfix == 0], ";\n", collapse = ""), 
-                      "    real<lower=0> sigma;
-}
+                      paste0("    real<lower=0> sigma", 1:length(fitting_index), ";\n", collapse = ""),
+                      "}
     
 transformed parameters {
     real y[n_days + nfst_days, ", length(vars), "];
@@ -283,18 +303,22 @@ transformed parameters {
 }
     
 model {
-", prior_assignments, "
-    sigma ~", normalerror_prior, ";
-  for (t in 1:n_days) {
-    cases[t] ~ normal(fmax(1e-6,", fitting, "), sigma);
- }
+", prior_assignments, " ")
+  stan_code <- paste0(stan_code, paste0("sigma", 1:length(fitting_index), " ~ ", 
+                                        sapply(1:length(fitting_index), function(i) {
+                                          get(paste0("normalerror", i, "_prior"))
+                                        }), ";\n", collapse = ""), 
+                      "  
+  for (t in 1:n_days) {")
+  stan_code <- paste0(stan_code, paste0("    cases", 1:length(fitting_index), "[t] ~ normal(fmax(1e-6, ", fitting[1:length(fitting_index)], "), sigma", 1:length(fitting_index), ");\n", collapse = ""), 
+"}
 }
     
-generated quantities {
-    real pred_cases[n_days+nfst_days];
-    for (t in 1:n_days+nfst_days) {
-        pred_cases[t] = normal_rng(fmax(1e-6, ", fitting, "), sigma);
-    }
+generated quantities {")
+      stan_code <- paste0(stan_code, paste0("    real pred_cases", 1:length(fitting_index), "[n_days + nfst_days];\n", collapse = ""),
+                      "    for (t in 1:n_days + nfst_days) {\n")
+      stan_code <- paste0(stan_code, paste0("        pred_cases", 1:length(fitting_index), "[t] = normal_rng(fmax(1e-6, ", fitting[1:length(fitting_index)], "), sigma", 1:length(fitting_index), ");\n", collapse = ""),
+                          "    }
 ")
   if (length(composite_expressions) > 0) {
     stan_code <- paste0(stan_code,"
@@ -350,16 +374,16 @@ transformed parameters {
     
 model {
     ", prior_assignments, "
-  for (t in 1:n_days) {
-    cases[t] ~ poisson(fmax(1e-6,", fitting, "));
- }
+  for (t in 1:n_days) {")
+  stan_code <- paste0(stan_code, paste0("    cases", 1:length(fitting_index), "[t] ~ poisson(fmax(1e-6, ", fitting[1:length(fitting_index)], "));\n", collapse = ""), 
+"}
 }
     
-generated quantities {
-    real pred_cases[n_days + nfst_days];
-    for (t in 1:n_days + nfst_days) {
-        pred_cases[t] = poisson_rng(fmax(1e-6,", fitting, "));
-    }
+generated quantities {")
+  stan_code <- paste0(stan_code, paste0("    real pred_cases", 1:length(fitting_index), "[n_days + nfst_days];\n", collapse = ""),
+                      "    for (t in 1:n_days + nfst_days) {\n")
+  stan_code <- paste0(stan_code, paste0("        pred_cases", 1:length(fitting_index), "[t] = poisson_rng(fmax(1e-6, ", fitting[1:length(fitting_index)], "));\n", collapse = ""),
+                      "    }
 ")
 if (length(composite_expressions) > 0) {
 stan_code <- paste0(stan_code,"

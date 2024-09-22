@@ -1,23 +1,23 @@
 # options.R
 
 # Set the calibration period and forecasting horizon
-calibrationperiods <- c(50,60,70,80,90)
+calibrationperiods <- c(30)
 
 # Set the calibration period and forecasting horizon
-forecastinghorizon <- 10
+forecastinghorizon <- 70
 
-model_name <- "Bayesian-weak"
+model_name <- "SEIR-I_dcdt"
 
 # Define the state variable names
 vars <- c("S", "E", "I", "R", "C")
 
 # Define the parameters
 # Example:
-# beta: the transmission rate. the range for this experiment is considered wide: (0,25)
-# gamma: the recovery rate. the range for this experiment is considered wide: (0,25)
-# kappa: the incubation rate. the range for this experiment is considered wide: (0,25)
-# rho: the recovery proportion rate. the range for this parameter is (0,1)
-# N: The population size. It is a fixed number for this case study: 100,000
+# beta: the transmission rate. the range for the flu 1918 is (0,2)
+# gamma: the recovery rate. the range for the flu 1918 is (0,1)
+# kappa: the incubation rate. the range for the flu 1918 is (0,2)
+# rho: the recovery proportion rate. the range for the flu 1918 is (0,1)
+# N: The population size. It is a fixed number for this case study: 550,000
 params <- c("beta", "gamma", "kappa", "rho","N")
 
 ode_system <- '
@@ -27,33 +27,31 @@ ode_system <- '
   diff_var4 = params2 * vars3
   diff_var5 = params4 * params3 * vars2'
 
-
 # Indicate if a parameter is fixed
-paramsfix <- c(0,0,0,0,1)
+paramsfix <- c(0,0,0,1,1)
 
 # To generate interesting parameters
 composite_expressions <- list(
-  R0 = "beta / gamma",
-  recovery_time = "1 / gamma"
+  R0 = "beta / gamma"
 )
 
 # index of the model's variable that will be fit to the observed time series data
-fitting_index <- c(5)
+fitting_index <- c(3,5)
 
 # boolean variable to indicate if the derivative of model's fitting variable should be fit to data.
-fitting_diff <- c(1)
+fitting_diff <- c(0,1)
 
 #Select the type of error structure 1.Negative binomial 2. Normal 3. Poisson
 errstrc <- 2
 
 
 #Define your input file
-cadfilename1 <- "curve-SEIR_plain_unrep_Hamed_LSQ-beta_0-0.5-kappa-1-rho-0.5-gamma-0.25-N-100000-M-1-dist1-0-factor1-5"
+cadfilename1 <- "curve-SEIR_plain_I-dCdt-dist1-0-factor1-5"
 
 # string indicating the name of the disease related to the time series data
 caddisease <- "simulated"
 
-series_cases <- c("Cases")
+series_cases <- c("infectious","newly infected")
 
 datetype <- "Days"
 
@@ -62,10 +60,10 @@ datetype <- "Days"
 # recommended to truncate the distribution at zero. Therefore, when using a normal
 # distribution, use T[0,] to say that it is truncated at zero.
 
-params1_prior <- "normal(0.5, 10)T[0,]"
-params2_prior <- "normal(0.25, 10)T[0,]"
-params3_prior <- "normal(1, 10)T[0,]"
-params4_prior <- "uniform(0,1)"
+params1_prior <- "uniform(0, 10)"
+params2_prior <- "uniform(0, 10)"
+params3_prior <- "uniform(0, 10)"
+params4_prior <- 1
 params5_prior <- 100000
 
 # Define the lower bound of parameters
@@ -82,8 +80,9 @@ params4_UB <- 1
 
 # Select the prior distribution when using a normal or negative binomial 
 # error structure
-normalerror1_prior <- "cauchy(0, 10)T[0,]"
-negbinerror1_prior <- "exponential(5)"
+normalerror1_prior <- "cauchy(0, 2.5)"
+normalerror2_prior <- "cauchy(0, 2.5)"
+negbinerror_prior <- "exponential(5)"
 
 # Select 0 if you want the initial condition be estimated as well. Otherwise, select 1
 vars.init <- 1
@@ -92,7 +91,7 @@ vars.init <- 1
 Ic = c(99999,0,1,0,1)
 
 # number of MCMC steps
-niter <- 50000
+niter <- 10000
 
 # number of chains
 num_chain = 2

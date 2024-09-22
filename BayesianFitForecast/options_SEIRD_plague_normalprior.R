@@ -38,10 +38,10 @@ composite_expressions <- list(
 )
 
 # index of the model's variable that will be fit to the observed time series data
-fitting_index <- 5
+fitting_index <- c(5)
 
 # boolean variable to indicate if the derivative of model's fitting variable should be fit to data.
-fitting_diff <- 1
+fitting_diff <- c(1)
 
 #Select the type of error structure 1.Negative binomial 2. Normal 3. Poisson
 errstrc <- 2
@@ -53,7 +53,7 @@ cadfilename1 <- "curve-plague-bombay"
 # string indicating the name of the disease related to the time series data
 caddisease <- "plague"
 
-datatype <- "Deaths"
+series_cases <- c("Deaths")
 
 datetype <- "weeks"
 
@@ -82,8 +82,8 @@ params4_UB <- 1
 
 # Select the prior distribution when using a normal or negative binomial 
 # error structure
-normalerror_prior <- "cauchy(0, 2.5)"
-negbinerror_prior <- "exponential(5)"
+normalerror1_prior <- "cauchy(0, 2.5)"
+negbinerror1_prior <- "exponential(5)"
 
 # Select 0 if you want the initial condition be estimated as well. Otherwise, select 1
 vars.init <- 1

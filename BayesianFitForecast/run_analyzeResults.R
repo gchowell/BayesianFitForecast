@@ -7,7 +7,7 @@ library(openxlsx)
 library(rstan)
 library(ggplot2)
 setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
-source("options_SEIR_sanfrancisco_Ex5.R")
+source("options_SEIR_sanfrancisco_Ex3_Negbin.R")
 
 
 
@@ -20,7 +20,9 @@ dir.create("output", showWarnings = FALSE)
 errorstructure <- c("negativebinomial","normal","poisson")
 
 
-actualcases <- Mydata$cases
+for (i in 1:length(fitting_index)) {
+  assign(paste0("actualcases", i), Mydata[[paste0("cases", i)]])
+}
 result_data1 <- data.frame()
 result_data2 <- data.frame()
 
@@ -35,12 +37,12 @@ for(calibrationperiod in calibrationperiods){
                  calibrationperiod, "fcst", forecastinghorizon, sep = "-") 
     dir.create(folder_name, showWarnings = FALSE)
   
-  my_solutionaggr <- pred_cases
-  medcurve <- matrix(NA, nrow = 1, ncol = calibrationperiod+forecastinghorizon)
-  medcurve <- apply(my_solutionaggr, 2, median)
-  mcmc_intervals_aggr <- apply(my_solutionaggr, 2, quantile, prob=c(.025, .975))
-  
-     
+    for (i in 1:length(fitting_index)) {
+      assign(paste0("my_solutionaggr", i), pred_cases[,,i])
+      assign(paste0("medcurve", i), apply(get(paste0("my_solutionaggr", i)), 2, median))
+      assign(paste0("mcmc_intervals_aggr", i), apply(get(paste0("my_solutionaggr", i)), 
+                                                     2, quantile, probs = c(0.025, 0.975)))
+    }
   
   ##############################################################################
   ##############################################################################
@@ -189,41 +191,65 @@ for(calibrationperiod in calibrationperiods){
   ##############################################################################
   ##############################################################################
   #Defining the actual cases and the median curve for calibration period and forecasting period
-  actual_calibration <- actualcases[1:calibrationperiod]
-  medcurve_calibration <- medcurve[1:calibrationperiod]
-  mysolutionaggr_calibration <- my_solutionaggr[, 1:calibrationperiod]
-  if (forecastinghorizon>0)
-  {
-  actual_forecast <- actualcases[(calibrationperiod + 1):
-                                   (calibrationperiod + forecastinghorizon)]
-  medcurve_forecast <- medcurve[(calibrationperiod + 1):
-                                  (calibrationperiod + forecastinghorizon)]
-  
-  mysolutionaggr_forecast <- my_solutionaggr[, (calibrationperiod + 1):(calibrationperiod + forecastinghorizon)]
-  }
-  
-  mae_calibration <- calculate_mae(actual_calibration, medcurve_calibration)
-  mse_calibration <- calculate_mse(actual_calibration, medcurve_calibration)
-  wis_calibration <- calculate_WIS(mysolutionaggr_calibration,actual_calibration)
-  coverage_calibration <- calculate_percent_within_interval_calibration(actual_calibration, mcmc_intervals_aggr)
-  # Check if the forecast period is within the length of actual cases
-  if ((calibrationperiod + forecastinghorizon) <= length(actualcases) && forecastinghorizon > 0) {
-    # Calculate metrics
-    mae_forecast <- calculate_mae(actual_forecast, medcurve_forecast)
-    mse_forecast <- calculate_mse(actual_forecast, medcurve_forecast)
-    if(forecastinghorizon==1)
+  for (i in 1:length(fitting_index)) {
+    assign(paste0("actual", i, "_calibration"), get(paste0("actualcases", i))[1:calibrationperiod])
+    assign(paste0("medcurve", i, "_calibration"), get(paste0("medcurve", i))[1:calibrationperiod])
+    assign(paste0("mysolutionaggr", i, "_calibration"), get(paste0("my_solutionaggr", i))[, 1:calibrationperiod])
+    if (forecastinghorizon>0)
     {
-      mysolutionaggr_forecast<-matrix(mysolutionaggr_forecast, ncol = 1)
+      assign(paste0("actual", i, "_forecast"), 
+        get(paste0("actualcases", i))[(calibrationperiod + 1):(calibrationperiod + forecastinghorizon)])
+      assign(paste0("medcurve", i, "_forecast"), 
+        get(paste0("medcurve", i))[(calibrationperiod + 1):(calibrationperiod + forecastinghorizon)])
+      assign(paste0("mysolutionaggr", i, "_forecast"), 
+        get(paste0("my_solutionaggr", i))[, (calibrationperiod + 1):(calibrationperiod + forecastinghorizon)])
     }
-    wis_forecast <- calculate_WIS(mysolutionaggr_forecast, actual_forecast)
-    coverage_forecast <- calculate_percent_within_interval_forecast(actual_forecast, mcmc_intervals_aggr)
-  } else {
-    # Set metrics to NA if the forecast period exceeds the length of actual cases
-    mae_forecast <- NA
-    mse_forecast <- NA
-    wis_forecast <- NA
-    coverage_forecast <- NA
-  }
+    assign(paste0("mae", i, "_calibration"), 
+        calculate_mae(get(paste0("actual", i, "_calibration")), get(paste0("medcurve", i, "_calibration"))))
+    assign(paste0("mse", i, "_calibration"), 
+        calculate_mse(get(paste0("actual", i, "_calibration")), get(paste0("medcurve", i, "_calibration"))))
+    assign(paste0("wis", i, "_calibration"), 
+           calculate_WIS(get(paste0("mysolutionaggr", i, "_calibration")), 
+                         get(paste0("actual", i, "_calibration"))))
+    assign(paste0("coverage", i, "_calibration"), calculate_percent_within_interval_calibration(
+      get(paste0("actual", i, "_calibration")),
+      get(paste0("mcmc_intervals_aggr", i))
+    ))
+    # Check if the forecast period is within the length of actual cases
+    if ((calibrationperiod + forecastinghorizon) <= length(actualcases1) && forecastinghorizon > 0) {
+    assign(paste0("mae", i, "_forecast"), calculate_mae(
+      get(paste0("actual", i, "_forecast")),
+      get(paste0("medcurve", i, "_forecast"))
+      ))
+      assign(paste0("mse", i, "_forecast"), calculate_mse(
+        get(paste0("actual", i, "_forecast")),
+        get(paste0("medcurve", i, "_forecast"))
+      ))
+      if(forecastinghorizon==1)
+      {
+        assign(paste0("mysolutionaggr", i, "_forecast"), matrix(
+          get(paste0("mysolutionaggr", i, "_forecast")),
+          ncol = 1
+        ))
+      }
+      assign(paste0("wis", i, "_forecast"), calculate_WIS(
+        get(paste0("mysolutionaggr", i, "_forecast")),
+        get(paste0("actual", i, "_forecast"))
+      ))
+      assign(paste0("coverage", i, "_forecast"), calculate_percent_within_interval_forecast(
+        get(paste0("actual", i, "_forecast")),
+        get(paste0("mcmc_intervals_aggr", i))
+      ))
+    }
+    else {
+      # Set metrics to NA if the forecast period exceeds the length of actual cases
+      assign(paste0("mae", i, "_forecast"),NA)
+      assign(paste0("mse", i, "_forecast"),NA)
+      assign(paste0("wis", i, "_forecast"),NA)
+      assign(paste0("coverage", i, "_forecast"),NA)
+    }
+}
+  
   ##############################################################################
   ##############################################################################
   
@@ -235,77 +261,100 @@ for(calibrationperiod in calibrationperiods){
   ##############################################################################
   
   
-  data <- data.frame(
-    Calibration = c(mae_calibration, mse_calibration, wis_calibration, coverage_calibration),
-    Forecasting = c(mae_forecast, mse_forecast, wis_forecast, coverage_forecast),
-    row.names = c("mae", "mse", "WIS", "Coverage")
-  )
-  
-  file_path <- file.path(
-    folder_name, 
-    sprintf(
-      "performance metrics-%s-%s-%s-cal-%s-fcst-%s.xlsx",
-      model_name,
-      caddisease,
-      errorstructure[errstrc],
-      calibrationperiod,
-      forecastinghorizon
+    # Assuming series_cases is an array of strings
+    for (i in 1:length(fitting_index)) {
+      # Create the data frame for the current index
+      data <- data.frame(
+        Calibration = c(get(paste0("mae", i, "_calibration")), 
+                        get(paste0("mse", i, "_calibration")), 
+                        get(paste0("wis", i, "_calibration")), 
+                        get(paste0("coverage", i, "_calibration"))),
+        Forecasting = c(get(paste0("mae", i, "_forecast")), 
+                        get(paste0("mse", i, "_forecast")), 
+                        get(paste0("wis", i, "_forecast")), 
+                        get(paste0("coverage", i, "_forecast"))),
+        row.names = c("mae", "mse", "WIS", "Coverage")
+      )
+      
+      # Create the file path with series_cases[i]
+      file_path <- file.path(
+        folder_name, 
+        sprintf(
+          "performance metrics-%s-%s-%s-%s-cal-%s-fcst-%s.xlsx",
+          model_name,
+          caddisease,
+          errorstructure[errstrc],
+          series_cases[i],  
+          calibrationperiod,
+          forecastinghorizon
+        )
+      )
+      
+      # Write the data frame to an Excel file
+      write.xlsx(data, file_path, row.names = TRUE)
+    }
+    
+##############################################################################
+  for (i in 1:length(fitting_index)) {
+    # Retrieve and process cases
+    cases_i <- as.integer(get(paste0("actualcases", i))[1:(calibrationperiod+forecastinghorizon)])
+    assign(paste0("cases", i), cases_i)
+    
+    # Create the data frame for the current index
+    data <- data.frame(
+      Date = 0:(calibrationperiod + forecastinghorizon - 1),
+      Data = c(cases_i, rep(NA, (calibrationperiod + forecastinghorizon) - length(cases_i))),
+      median = round(get(paste0("medcurve", i))[1:(calibrationperiod + forecastinghorizon)], 1),
+      LB = pmax(0, round(get(paste0("mcmc_intervals_aggr", i))[1, 1:(calibrationperiod + forecastinghorizon)], 1)),
+      UB = round(get(paste0("mcmc_intervals_aggr", i))[2, 1:(calibrationperiod + forecastinghorizon)], 1)
     )
-  )
-  # Write the data frame to an Excel file
-  write.xlsx(data, file_path, row.names = TRUE)
-  ##############################################################################
-  cases <- head(round(actualcases, 1), calibrationperiod + forecastinghorizon)
-  # Create a data frame with the arrays
-  data <- data.frame(
-    Date = 0:(calibrationperiod + forecastinghorizon-1),
-    Data = c(cases, rep(NA, (calibrationperiod + forecastinghorizon) - length(cases))),
-    median = round(medcurve[1:(calibrationperiod + forecastinghorizon)], 1),
-    LB = pmax(0, round(mcmc_intervals_aggr[1, 1:(calibrationperiod + forecastinghorizon)], 1)),
-    UB = round(mcmc_intervals_aggr[2, 1:(calibrationperiod + forecastinghorizon)], 1)
-  )
-  
-  excel_file <- file.path(
-    folder_name, 
-    sprintf(
-      "forecast-%s-%s-%s-cal-%s-fcst-%s.xlsx",
-      model_name,
-      caddisease,
-      errorstructure[errstrc],
-      calibrationperiod,
-      forecastinghorizon
+    
+    # Create the file path for Excel
+    file_path <- file.path(
+      folder_name, 
+      sprintf(
+        "data-%s-%s-%s-%s-cal-%s-fcst-%s.xlsx",
+        model_name,
+        caddisease,
+        errorstructure[errstrc],
+        series_cases[i], 
+        calibrationperiod,
+        forecastinghorizon
+      )
     )
-  )
-  write.xlsx(data, file = excel_file, row.names = FALSE)
-  ##############################################################################
-  ##############################################################################
-  # Plotting
-  plot <- ggplot(data, aes(x = Date)) +
-    geom_point(aes(y = Data), shape = 21, color = "black", fill = NA, size = 1.5, stroke = 0.7, show.legend = FALSE) +
-    geom_line(aes(y = median), color = "red", size = 1, show.legend = FALSE) +
-    geom_line(aes(y = LB), color = "black", linetype = "dashed", size = 0.5, show.legend = FALSE) +
-    geom_line(aes(y = UB), color = "black", linetype = "dashed", size = 0.5, show.legend = FALSE) +
-    labs(title = '', x = datetype, y = datatype) +
-    theme_minimal()
-  
-  # Add the vertical line conditionally
-  if (forecastinghorizon > 0) {
-    plot <- plot + geom_vline(xintercept = calibrationperiod - 1, linetype = "dotted", size = 1, color = "blue", show.legend = FALSE)
-  }
-  
-  # Save the plot as a PDF file
-  pdf_filename <- file.path(
-    folder_name, 
-    sprintf(
-      "Forecast-%s-%s-%s-cal-%s-fcst-%s.pdf",
-      model_name,
-      caddisease,
-      errorstructure[errstrc],
-      calibrationperiod,
-      forecastinghorizon
+    
+    # Write the data frame to an Excel file
+    write.xlsx(data, file_path, row.names = FALSE)
+    
+    # Plotting
+    plot <- ggplot(data, aes(x = Date)) +
+      geom_point(aes(y = Data), shape = 21, color = "black", fill = NA, size = 1.5, stroke = 0.7, show.legend = FALSE) +
+      geom_line(aes(y = median), color = "red", size = 1, show.legend = FALSE) +
+      geom_line(aes(y = LB), color = "black", linetype = "dashed", size = 0.5, show.legend = FALSE) +
+      geom_line(aes(y = UB), color = "black", linetype = "dashed", size = 0.5, show.legend = FALSE) +
+      labs(title = '', x = datetype, y = series_cases[i]) + 
+      theme_minimal()
+    
+    # Add the vertical line conditionally
+    if (forecastinghorizon > 0) {
+      plot <- plot + geom_vline(xintercept = calibrationperiod - 1, linetype = "dotted", size = 1, color = "blue", show.legend = FALSE)
+    }
+    
+    # Save the plot as a PDF file
+    pdf_filename <- file.path(
+      folder_name, 
+      sprintf(
+        "Forecast-%s-%s-%s-cal-%s-fcst-%s.pdf",
+        model_name,
+        caddisease,
+        errorstructure[errstrc],
+        series_cases[i],
+        calibrationperiod,
+        forecastinghorizon
+      )
     )
-  )
-  ggsave(filename = pdf_filename, plot = plot, width = 8, height = 6)
+    ggsave(filename = pdf_filename, plot = plot, width = 8, height = 6)
+} 
   ##############################################################################
   
   # Loop through each parameter
