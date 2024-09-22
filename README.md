@@ -6,7 +6,7 @@
 
 - **Automated Stan File Generation**: Automatically generate Stan files based on user-defined ODE models, eliminating the need to write code manually.
 - **Bayesian Parameter Estimation**: Estimate model parameters using Bayesian inference, incorporating uncertainty and prior knowledge, which is particularly valuable in contexts with limited or noisy data.
-- **Model Performance Evaluation**: IIncludes comprehensive tools for evaluating model performance, such as convergence diagnostics, posterior distributions, credible intervals, and advanced performance metrics (e.g., Mean Absolute Error, Mean Squared Error, and Weighted Interval Score).
+- **Model Performance Evaluation**: Includes comprehensive tools for evaluating model performance, such as convergence diagnostics, posterior distributions, credible intervals, and advanced performance metrics (e.g., Mean Absolute Error, Mean Squared Error, and Weighted Interval Score).
 - **Versatility**: Applicable to a wide range of scientific fields, with demonstrated use cases including the analysis of the 1918 influenza pandemic in San Francisco using different error structures (e.g., Poisson and negative binomial) within the SEIR model.
 - **Tutorial Resources**: Includes a detailed tutorial and video guide to help users get started with the toolbox.
 
