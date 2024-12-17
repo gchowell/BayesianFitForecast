@@ -110,7 +110,8 @@ generate_stan_file <- function() {
   ##############################################################################
   # Generate the ODE function for Stan
   ode_function <- "
-  real[] ode(real t, real[] y, real[] theta, real[] x_r, int[] x_i) { \n"
+    array[] real ode(real t, array[] real y, array[] real theta, array[] real x_r, array[] int x_i) { \n"
+  
   
   ode_function <- paste0(ode_function, "\n \n")
   # Loop through params_to_include to construct the ode_function

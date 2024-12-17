@@ -1,5 +1,5 @@
 functions {
-  real[] ode(real t, real[] y, real[] theta, real[] x_r, int[] x_i) { 
+    array[] real ode(real t, array[] real y, array[] real theta, array[] real x_r, array[] int x_i) { 
 
  
     real beta = theta[1];
@@ -40,13 +40,11 @@ transformed data {
   }
 parameters {
     real<lower=0> beta;
-    real<lower=0> phi_inv1;
-}
+
+ }
     
 transformed parameters {
     real y[n_days + nfst_days, 5];
-         real phi1 = 1. / phi_inv1;
- 
     {
     real theta[1];
         theta[1] = beta;
@@ -56,20 +54,16 @@ y = integrate_ode_rk45(ode, y0, t0, ts, theta, x_r, x_i);
     
 model {
       beta ~ uniform(0, 10);
-  phi_inv1 ~ exponential(5);
-  
-  for (t in 1:n_days) {
-    cases1[t] ~ neg_binomial_2(fmax(1e-6, rho * kappa * y[t,2]), phi1);
-  }
+
+  for (t in 1:n_days) {    cases1[t] ~ poisson(fmax(1e-6, rho * kappa * y[t,2]));
+}
 }
     
-generated quantities {
-    real pred_cases1[n_days + nfst_days];
+generated quantities {    real pred_cases1[n_days + nfst_days];
     for (t in 1:n_days + nfst_days) {
-        pred_cases1[t] = neg_binomial_2_rng(fmax(1e-6, rho * kappa * y[t,2]), phi1);
+        pred_cases1[t] = poisson_rng(fmax(1e-6, rho * kappa * y[t,2]));
     }
 
     // Composite quantities
         real R0 = beta / gamma;
-    real recovery_time = 1 / gamma;
 }

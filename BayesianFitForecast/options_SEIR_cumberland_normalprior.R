@@ -93,7 +93,7 @@ vars.init <- 1
 Ic = c(9994,0,6,0,6)
 
 # number of MCMC steps
-niter <- 10000
+niter <- 1000
 
 # number of chains
 num_chain = 2
