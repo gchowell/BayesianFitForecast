@@ -2,6 +2,10 @@
 
 **BayesianFitForecast** is an R toolbox designed to streamline Bayesian parameter estimation and forecasting in ordinary differential equation (ODE) models, particularly for infectious disease applications. This toolbox simplifies the complex process of Bayesian inference by automating the generation of Stan files, enabling users to configure models, define priors, and analyze results efficiently, even with minimal programming expertise.
 
+<p> <a href="https://arxiv.org/abs/2411.05371" target="_blank">BayesianFitForecast Tutorial</a></p> 
+<p><a href="https://www.youtube.com/watch?v=jnxMjz3V3n8" target="_blank">Video Tutorial</a></p>
+
+
 ## Features
 
 - **Automated Stan File Generation**: Automatically generate Stan files based on user-defined ODE models, eliminating the need to write code manually.
