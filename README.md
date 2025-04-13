@@ -14,10 +14,6 @@
 - **Versatility**: Applicable to a wide range of scientific fields, with demonstrated use cases including the analysis of the 1918 influenza pandemic in San Francisco using different error structures (e.g., Poisson and negative binomial) within the SEIR model.
 - **Tutorial Resources**: Includes a detailed tutorial and video guide to help users get started with the toolbox.
 
-## Video tutorial
-
-https://www.youtube.com/watch?v=jnxMjz3V3n8
-
 ## Usage
 
 ### 1. Configuring Your Model
