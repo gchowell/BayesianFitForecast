@@ -1,3 +1,4 @@
+
   ###################
   # Needed packages #
   ###################
@@ -5,24 +6,43 @@
   # List of required packages
   required_packages <- c(
     "shiny", "shinydashboard", "shinyWidgets", "ggplot2", "plotly", "DT", "mathjaxr",
-    "readxl", "shinyjqui", "shinymath", "bayesplot", "xlsx", "openxlsx", "rstan", 
-    "shinyjs", "BayesianFitForecast", "latex2r", "stringr", "shinybusy", "eList",
-    "shinyalert", "glue"
+    "readxl", "shinyjqui", "devtools", "bayesplot", "xlsx", "openxlsx", "rstan", 
+    "shinyjs", "BayesianFitForecast", "stringr", "shinybusy", "eList",
+    "shinyalert", "glue", "remotes"
   )
   
   # Function to check and install if needed
   install_and_load <- function(pkg) {
+    
     if (!requireNamespace(pkg, quietly = TRUE)) {
       message(paste("Installing", pkg))
       install.packages(pkg)
     }
+    
     library(pkg, character.only = TRUE)
   }
   
   # Apply to all packages
   invisible(lapply(required_packages, install_and_load))
   
+#------------------------------------------------------------------------------#
+# Loading ShinyMath ------------------------------------------------------------
+#------------------------------------------------------------------------------#
+# About: This section loads the shinyMath function locally from the downloaded #
+# function. It then calls the library normally.                                #
+#------------------------------------------------------------------------------#
   
+  # Installing latex2r
+  install.packages("latex2r-master", repos = NULL, type = "source")
+  
+  # Library latex2r
+  library(latex2r)
+  
+  # Installing shinyMath
+  install.packages("shinymath-master", repos = NULL, type = "source")
+  
+  # Loading shinyMath
+  library(shinymath)
   
   ############################
   # Load necessary functions #
