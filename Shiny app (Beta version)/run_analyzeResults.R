@@ -250,13 +250,13 @@ run_analyzeResults <- function(optionsFile, MCMCOutput, data.temp){
       temp_list[[i]] <- recordPlot()
       
       # Adding the name
-      names(temp_list)[[i]] <- pars[i]
+      names(temp_list)[i] <- pars[i]
       
       # Update the list in the global environment
       assign(plot_list_name, temp_list)
       
       # Explicitly close the plot object
-      dev.off() 
+      #dev.off() 
       
     }
     
@@ -290,7 +290,10 @@ run_analyzeResults <- function(optionsFile, MCMCOutput, data.temp){
     ##########################################
     # Loop through each composite expression #
     ##########################################
-    for (name in names(composite_expressions)) {
+    for(i in 1:length(composite_expressions)) {
+      
+      # Indexing the name
+      name <- names(composite_expressions)[i]
       
       # Extract samples for the current composite expression
       current_samples <- composite_samples[[name]]
@@ -358,13 +361,13 @@ run_analyzeResults <- function(optionsFile, MCMCOutput, data.temp){
       temp_list[[i]] <- recordPlot()
       
       # Adding the name
-      names(temp_list)[[i]] <- name
+      names(temp_list)[i] <- name
       
       # Update the list in the global environment
       assign(plot_list_name, temp_list)
       
       # Explicitly close the plot object
-      dev.off() 
+      #dev.off() 
       
     }
     

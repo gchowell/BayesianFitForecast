@@ -4287,7 +4287,7 @@ server <- function(input, output, session) {
       
       title = "Prepared files.",
       
-      h4("Do you want to download the produced 'options.m' file?"), 
+      h4("Do you want to download the produced 'options.R' file?"), 
       
       # Buttons in a flex row
       div(style = "text-align: center;", downloadButton("downloadOptionsFile", "Download Options File")),
@@ -5197,7 +5197,7 @@ server <- function(input, output, session) {
     # Reactive value storing the figures #
     ######################################
     plots.to.save$plots <- plot.to.save.list
-
+    
   })
   
 #------------------------------------------------------------------------------#
