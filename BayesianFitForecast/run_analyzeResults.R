@@ -5,12 +5,11 @@ library(xlsx)
 library(readxl)
 library(openxlsx)
 library(rstan)
-library(ggplot2)
+library(ggplot2) 
+library(stringr)
+library(gridExtra)
 setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
-source("options_SEIR_sanfrancisco_Ex1.R")
-
-
-
+source("options_seir_timedep.R")
 source("Metric functions.R")
 Mydata <- read_excel(paste0(cadfilename1, ".xlsx"))
 
@@ -448,7 +447,105 @@ for(calibrationperiod in calibrationperiods){
   
   write.xlsx(result_data2, file = excel_file2, row.names = FALSE)
   
-
+  
+ 
+  
+  
+  
+  # Optimized evaluate_time_dependent function
+  evaluate_time_dependent <- function(template, params, t_range) {
+    # Process template once
+    template <- gsub(";", "", template)
+    template <- gsub("^return\\s+", "", template, perl = TRUE)
+    template <- gsub("params(\\d+)", "params[\\1]", template, perl = TRUE)
+    
+    func_str <- paste0("function(t, params) {", template, "}")
+    func <- eval(parse(text = func_str))
+    
+    # Vectorize evaluation over t_range
+    sapply(t_range, function(t) func(t, params))
+  }
+  
+  # Optimized plot function
+  plot_time_dependent_params <- function(param_samples, params, paramsfix, time_dependent_templates,
+                                         t_range, n_samples) {
+    n_templates <- length(time_dependent_templates)
+    if (n_templates == 0) {
+      stop("No time-dependent templates provided")
+    }
+    
+    plots <- list()
+    
+    # Pre-process all templates once
+    processed_templates <- lapply(time_dependent_templates, function(template) {
+      template <- gsub(";", "", template)
+      template <- gsub("^return\\s+", "", template, perl = TRUE)
+      template <- gsub("params(\\d+)", "params[\\1]", template, perl = TRUE)
+      
+      func_str <- paste0("function(t, params) {", template, "}")
+      eval(parse(text = func_str))
+    })
+    
+    # Prepare parameter samples once
+    sample_params_list <- lapply(1:min(n_samples, nrow(param_samples)), function(j) {
+      sample_params <- numeric(length(params))
+      names(sample_params) <- params
+      
+      for (k in 1:length(params)) {
+        if (paramsfix[k] == 1) {
+          sample_params[k] <- get(paste0("params", k, "_prior"))
+        } else {
+          sample_params[k] <- param_samples[[params[k]]][j]
+        }
+      }
+      sample_params
+    })
+    
+    for (i in 1:n_templates) {
+      template_name <- names(time_dependent_templates)[i]
+      func <- processed_templates[[i]]
+      
+      # Pre-allocate results matrix
+      results <- matrix(NA, nrow = min(n_samples, nrow(param_samples)), ncol = length(t_range))
+      
+      # Compute all results for this template
+      for (j in 1:length(sample_params_list)) {
+        sample_params <- sample_params_list[[j]]
+        # Vectorize over t_range
+        results[j, ] <- sapply(t_range, function(t) func(t, sample_params))
+      }
+      
+      median_values <- apply(results, 2, median, na.rm = TRUE)
+      
+      summary_data <- data.frame(
+        time = t_range,
+        median = median_values
+      )
+      
+      p <- ggplot() +
+        geom_line(data = summary_data, aes(x = time, y = median), size = 1.5, color = "blue") +
+        labs(title = paste("Time-dependent parameter:", template_name),
+             x = "Time", y = "Parameter value") +
+        theme_minimal()
+      
+      plots[[i]] <- p
+    }
+    
+    return(plots)
+  }
+  
+  # Main execution
+  param_samples_df <- as.data.frame(param_samples)
+  t_range <- seq(0, (calibrationperiod + forecastinghorizon - 1), by = 1)
+  
+  plots <- plot_time_dependent_params(param_samples_df, params, paramsfix,
+                                      time_dependent_templates, t_range, n_samples = niter)
+  # Save plots efficiently
+  template_names <- names(time_dependent_templates)
+  for(i in seq_along(plots)) {
+    filename <- file.path(folder_name, paste0(template_names[i], ".pdf"))
+    ggsave(filename, plots[[i]], width = 10, height = 6)
+  }
 }
 
 

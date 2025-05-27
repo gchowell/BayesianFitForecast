@@ -1,42 +1,42 @@
 # options.R
 
 # Set the calibration period and forecasting horizon
-calibrationperiods <- c(17)
+calibrationperiods <- c(65)
 
 # Set the calibration period and forecasting horizon
-forecastinghorizon <- 0
+forecastinghorizon <- 20
 
-model_name <- "Bayesian-uniform"
+model_name <- "Swiss_onlycases"
 
 # Define the state variable names
-vars <- c("S", "E", "I", "R", "C")
+vars <- c("S", "E", "I", "U", "R", "H", "C")
 
-# Define the parameters
-# Example:
-# beta: the transmission rate. the range for the flu 1918 is (0,2)
-# gamma: the recovery rate. the range for the flu 1918 is (0,1)
-# kappa: the incubation rate. the range for the flu 1918 is (0,2)
-# rho: the recovery proportion rate. the range for the flu 1918 is (0,1)
-# N: The population size. It is a fixed number for this case study: 550,000
-params <- c("beta", "gamma", "kappa", "rho","N")
+
+params <- c("beta0","beta1", "q", "alpha", "k", "gamma", "rho", "rhoh","N","t_int")
+
+time_dependent_templates <- list(
+  time_dependent_param1 = "if (t < params10) { return (params1); } else { return (params2 + (params1 - params2) * exp(-params3 * (t - params10))); }"
+)
 
 ode_system <- '
-  diff_var1 = -params1 * vars3 * vars1 / params5
-  diff_var2 = params1 * vars3 * vars1 / params5 - params3 * vars2
-  diff_var3 = params3 * vars2 - params2 * vars3
-  diff_var4 = params2 * vars3
-  diff_var5 = params4 * params3 * vars2'
+  diff_var1 = -time_dependent_param1 * vars1 * pow(vars3 + vars4,params4) / params9
+  diff_var2 = time_dependent_param1 * vars1 * pow(vars3 + vars4,params4) / params9 - params5 * vars2
+  diff_var3 = params5 * params7 * vars2 - params6 * vars3
+  diff_var4 = params5 * (1-params7) * vars2 - params6 * vars4
+  diff_var5 = params6 * (1-params8) * vars3 + params6 * vars4
+  diff_var6 = params6 * params8 * vars3
+  diff_var7 = params5 * params7 * vars2'
 
 # Indicate if a parameter is fixed
-paramsfix <- c(0,1,1,1,1)
+paramsfix <- c(0,0,0,1,1,1,0,0,1,1)
 
 # To generate interesting parameters
 composite_expressions <- list(
-  R0 = "beta / gamma"
+  R0 = "beta0 / gamma"
 )
 
 # index of the model's variable that will be fit to the observed time series data
-fitting_index <- c(5)
+fitting_index <- c(7)
 
 # boolean variable to indicate if the derivative of model's fitting variable should be fit to data.
 fitting_diff <- c(1)
@@ -46,10 +46,10 @@ errstrc <- 2
 
 
 #Define your input file
-cadfilename1 <- "SanFrancisco"
+cadfilename1 <- "MyData_cases"
 
 # string indicating the name of the disease related to the time series data
-caddisease <- "sanfrancisco"
+caddisease <- "Switzerland"
 
 series_cases <- c("Cases")
 
@@ -60,37 +60,57 @@ datetype <- "Days"
 # recommended to truncate the distribution at zero. Therefore, when using a normal
 # distribution, use T[0,] to say that it is truncated at zero.
 
-params1_prior <- "uniform(0, 10)"
-params2_prior <- 1/4.1
-params3_prior <- 1/1.9
+params1_prior <- "normal(0.5, 1)T[0,]"
+params2_prior <- "normal(0.5, 1)T[0,]"
+params3_prior <- "normal(0.5, 1)T[0,]"
 params4_prior <- 1
-params5_prior <- 550000
+params5_prior <- 0.2
+params6_prior <- 0.25
+params7_prior <- "uniform(0,1)"
+params8_prior <- "uniform(0,1)"
+params9_prior <- 8522630
+params10_prior <- 47
 
 # Define the lower bound of parameters
 params1_LB <- 0
 params2_LB <- 0
 params3_LB <- 0
-params4_LB <- 0
+params4_LB <- NA
+params5_LB <- NA
+params6_LB <- NA
+params7_LB <- 0
+params8_LB <- 0
+params9_LB <- NA
+params10_LB <- NA
+
 
 # Define the upper bound of parameters
 params1_UB <- NA
 params2_UB <- NA
 params3_UB <- NA
-params4_UB <- 1
+params4_UB <- NA
+params5_UB <- NA
+params6_UB <- NA
+params7_UB <- 1
+params8_UB <- 1
+params9_UB <- NA
+params10_UB <- NA
+
 
 # Select the prior distribution when using a normal or negative binomial 
 # error structure
 normalerror1_prior <- "cauchy(0, 2.5)"
+normalerror2_prior <- "cauchy(0, 2.5)"
 negbinerror1_prior <- "exponential(5)"
 
 # Select 0 if you want the initial condition be estimated as well. Otherwise, select 1
 vars.init <- 1
 
 # Enter the initial condition for variables
-Ic = c(549996,0,4,0,4)
+Ic = c(8522629,0,1,0,0,1,1)
 
 # number of MCMC steps
-niter <- 1000
+niter <- 5000
 
 # number of chains
 num_chain = 2

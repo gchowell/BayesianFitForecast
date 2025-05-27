@@ -2,7 +2,7 @@ rm(list = ls())
 setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
 library(readxl)
 library(rstan)
-source("options_SEIR_sanfrancisco_Ex1.R")
+source("options_seir_timedep.R")
 source("diff.R")
 source("ode_rhs.R")
 source("stancreator.R")
@@ -12,6 +12,8 @@ stan_file <- "ode_model.stan"
 stan_code <- generate_stan_file()
 writeLines(stan_code, stan_file)
 Mydata <- read_excel(paste0(cadfilename1, ".xlsx"))
+options(mc.cores = 1)
+rstan_options(auto_write = TRUE)
 for (i in 1:length(fitting_index)) {
   assign(paste0("actualcases", i), Mydata[[paste0("cases", i)]])
 }
@@ -29,8 +31,6 @@ for(calibrationperiod in calibrationperiods){
   if(length(Ic) == 1) {
     y0 <- array(Ic[1], dim = 1)
   }
-  
-  
   for (i in 1:length(fitting_index)) {
     assign(paste0("cases_all", i), c(get(paste0("cases", i)), rep(NA, nfst_days)))
   }
@@ -56,11 +56,14 @@ for(calibrationperiod in calibrationperiods){
       data_ode[[params[i]]] <- prior_value  # Add parameter with its prior to ode_data
     }
   }
+  flush.console()
+ 
   fit_ode_model <- sampling(model,
-                              data = data_ode,
-                              iter = niter,
-                              chains = num_chain, 
-                              seed = 0)
+                            data = data_ode,
+                            iter = niter,
+                            chains = num_chain,
+                            seed = 0)
+  
   pars <- params[paramsfix == 0]
   if (errstrc == 1) {
     for (i in 1:length(fitting_index)) {

@@ -1,25 +1,35 @@
 functions {
+
+real time_dependent_param1(real t, real t_int, real beta0, real beta1, real q) {
+if (t < t_int) { return (beta0); } else { return (beta1 + (beta0 - beta1) * exp(-q * (t - t_int))); }
+}
+
+
     array[] real ode(real t, array[] real y, array[] real theta, array[] real x_r, array[] int x_i) { 
 
  
-    real beta = theta[1];
-    real rho = x_i[1];
-    real N = x_i[2];
-    real gamma = x_r[1];
-    real kappa = x_r[2];
+    real beta0 = theta[1];
+    real beta1 = theta[2];
+    real q = theta[3];
+    real kappa = theta[4];
+    real gamma = theta[5];
+    real rho = theta[6];
+    real N = x_i[1];
+    real t_int = x_i[2];
     real S = y[1];
     real E = y[2];
     real I = y[3];
     real R = y[4];
     real C = y[5];
 
-    real dS_dt = -beta * I * S / N;
-    real dE_dt = beta * I * S / N - kappa * E;
+    real dS_dt = -time_dependent_param1(t, t_int, beta0, beta1, q) * S * I / N;
+    real dE_dt = time_dependent_param1(t, t_int, beta0, beta1, q) * S * I / N - kappa * E;
     real dI_dt = kappa * E - gamma * I;
     real dR_dt = gamma * I;
-    real dC_dt = rho * kappa * E; 
+    real dC_dt = kappa * rho * E; 
  return{dS_dt,dE_dt,dI_dt,dR_dt,dC_dt};
  }
+
 }
   
 data {
@@ -27,43 +37,57 @@ data {
     int<lower=0> nfst_days;real y0[5];real t0;
 real ts[n_days + nfst_days];
 int cases1[n_days];
-    int rho;
     int N;
-    real gamma;
-    real kappa;
+    int t_int;
 }
   
 transformed data {
-    real x_r[2] = {gamma,kappa};
-    int x_i[2] = {rho,N};
+    real x_r[0];
+    int x_i[2] = {N,t_int};
 
   }
 parameters {
-    real<lower=0> beta;
-
- }
+    real<lower=0> beta0;
+    real<lower=0> beta1;
+    real<lower=0> q;
+    real<lower=0> kappa;
+    real<lower=0> gamma;
+    real<lower=0, upper=1> rho;
+    real<lower=0> sigma1;
+}
     
 transformed parameters {
     real y[n_days + nfst_days, 5];
     {
-    real theta[1];
-        theta[1] = beta;
+    real theta[6];
+        theta[1] = beta0;
+    theta[2] = beta1;
+    theta[3] = q;
+    theta[4] = kappa;
+    theta[5] = gamma;
+    theta[6] = rho;
 y = integrate_ode_rk45(ode, y0, t0, ts, theta, x_r, x_i);
  }
 }
     
 model {
-      beta ~ uniform(0, 10);
-
-  for (t in 1:n_days) {    cases1[t] ~ poisson(fmax(1e-6, rho * kappa * y[t,2]));
+  beta0 ~ normal(0.5, 1)T[0,];
+  beta1 ~ normal(0.5, 1)T[0,];
+  q ~ normal(0.5, 1)T[0,];
+  kappa ~ normal(0.5, 1)T[0,];
+  gamma ~ normal(0.5, 1)T[0,];
+  rho ~ uniform(0,1);
+ sigma1 ~ cauchy(0, 2.5);
+  
+  for (t in 1:n_days) {    cases1[t] ~ normal(fmax(1e-6, kappa * rho * y[t,2]), sigma1);
 }
 }
     
 generated quantities {    real pred_cases1[n_days + nfst_days];
     for (t in 1:n_days + nfst_days) {
-        pred_cases1[t] = poisson_rng(fmax(1e-6, rho * kappa * y[t,2]));
+        pred_cases1[t] = normal_rng(fmax(1e-6, kappa * rho * y[t,2]), sigma1);
     }
 
     // Composite quantities
-        real R0 = beta / gamma;
+        real R0 = beta0 / gamma;
 }

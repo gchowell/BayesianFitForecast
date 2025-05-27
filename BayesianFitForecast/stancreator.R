@@ -87,6 +87,34 @@ generate_stan_file <- function() {
     }
   }
   ##############################################################################
+  # Function: Find parameters in a time-dependent parameter
+  extract_used_params <- function(template) {
+    matches <- gregexpr("params[0-9]+", template)[[1]]
+    if (matches[1] == -1) return(character(0))
+    used <- regmatches(template, gregexpr("params[0-9]+", template))[[1]]
+    unique(used)
+  }
+  
+  # Function: Map to real parameter names
+  get_used_param_names <- function(used_placeholders, all_param_names) {
+    indices <- as.integer(sub("params", "", used_placeholders))
+    all_param_names[indices]
+  }
+  
+  # Function: Substitute parameters with their real name in the time-dep
+  replace_placeholders <- function(template, used_placeholders, param_names) {
+    for (i in seq_along(used_placeholders)) {
+      template <- gsub(used_placeholders[i], param_names[i], template, fixed = TRUE)
+    }
+    template
+  }
+  
+  expand_time_dependent_calls <- function(ode_code, fname, used_param_names) {
+    expanded_call <- paste0(fname, "(t, ", paste(used_param_names, collapse = ", "), ")")
+    gsub(fname, expanded_call, ode_code, fixed = TRUE)
+  }
+  
+  ##############################################################################
   fitting <- vector("list", length(fitting_index))  # Initialize an empty list to store the fitting results
   
   # Iterate through the fitting_index array
@@ -104,6 +132,15 @@ generate_stan_file <- function() {
     # Now, substitute variables in fitting
     for (i in seq_along(vars)) {
       fitting[[j]] <- gsub(paste0("\\b", vars[i], "\\b"), paste0("y[t,", i, "]"), fitting[[j]])
+    }
+    # Replace time_dependent_paramX with correct form
+    for (td_name in names(time_dependent_templates)) {
+      if (grepl(td_name, fitting[[j]], fixed = TRUE)) {
+        template <- time_dependent_templates[[td_name]]
+        used_placeholders <- extract_used_params(template)
+        used_param_names <- get_used_param_names(used_placeholders, params)
+        fitting[[j]] <- expand_time_dependent_calls(fitting[[j]], td_name, used_param_names)
+      }
     }
   }
   
@@ -141,9 +178,29 @@ generate_stan_file <- function() {
   
   ode_function <- paste0(ode_function,"\n", ode_system)
   
+ 
+  generated_functions <- c()
+  
+  for (fname in names(time_dependent_templates)) {
+    template <- time_dependent_templates[[fname]]
+    
+    used_placeholders <- extract_used_params(template)
+    used_param_names <- get_used_param_names(used_placeholders, params)
+    function_body <- replace_placeholders(template, used_placeholders, used_param_names)
+    
+    function_header <- paste0(
+      "real ", fname, "(real t, ",
+      paste(paste0("real ", used_param_names), collapse = ", "),
+      ") {"
+    )
+    full_function <- paste(function_header, function_body, "}", sep = "\n")
+    generated_functions <- c(generated_functions, full_function)
+    ode_function <- expand_time_dependent_calls(ode_function, fname, used_param_names)
+  }
+  
   # Generate the full Stan code
-  stan_code <- paste0("functions {", ode_function, "
-}
+  stan_code <- paste("functions {", paste(generated_functions, collapse = "\n\n"), ode_function, "}", sep = "\n\n")
+  stan_code <- paste0(stan_code,"
   
 data {
     int<lower=1> n_days;
