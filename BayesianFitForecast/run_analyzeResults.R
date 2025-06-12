@@ -2,6 +2,7 @@ rm(list = ls())
 library(bayesplot)
 library("readxl")
 library(xlsx)
+library(loo)
 library(readxl)
 library(openxlsx)
 library(rstan)
@@ -9,7 +10,7 @@ library(ggplot2)
 library(stringr)
 library(gridExtra)
 setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
-source("options_seir_timedep.R")
+source("options_seir_timedep_Ex7.R")
 source("Metric functions.R")
 Mydata <- read_excel(paste0(cadfilename1, ".xlsx"))
 
@@ -538,14 +539,157 @@ for(calibrationperiod in calibrationperiods){
   param_samples_df <- as.data.frame(param_samples)
   t_range <- seq(0, (calibrationperiod + forecastinghorizon - 1), by = 1)
   
-  plots <- plot_time_dependent_params(param_samples_df, params, paramsfix,
-                                      time_dependent_templates, t_range, n_samples = niter)
-  # Save plots efficiently
-  template_names <- names(time_dependent_templates)
-  for(i in seq_along(plots)) {
-    filename <- file.path(folder_name, paste0(template_names[i], ".pdf"))
-    ggsave(filename, plots[[i]], width = 10, height = 6)
+  if (length(time_dependent_templates) > 0) {
+    tryCatch({
+      plots <- plot_time_dependent_params(param_samples_df, params, paramsfix,
+                                          time_dependent_templates, t_range, n_samples = niter)
+      
+      # Save plots efficiently
+      template_names <- names(time_dependent_templates)
+      for (i in seq_along(plots)) {
+        filename <- file.path(folder_name, paste0(template_names[i], ".pdf"))
+        ggsave(filename, plots[[i]], width = 10, height = 6)
+      }
+    }, error = function(e) {
+      message("Time-dependent plotting skipped due to error: ", conditionMessage(e))
+    })
+  } else {
+    message("No time-dependent templates provided — skipping time-dependent plots.")
   }
+  
+  
+  #################### Metrics: DIC-WAIC-LOO
+  metrics_list <- list()
+  errorstructure <- c("negative_binomial", "normal", "poisson")
+  selected_error_structure <- errorstructure[errstrc]
+  
+  for (i in 1:length(fitting_index)) {
+    observed_data <- get(paste0("actualcases", i))[1:(calibrationperiod + forecastinghorizon)]
+    pred_matrix <- get(paste0("my_solutionaggr", i))
+    niter <- nrow(pred_matrix)
+    
+    ## --- DIC ---
+    deviances <- numeric(niter)
+    for (iter in 1:niter) {
+      pred_i <- pred_matrix[iter, ]
+      if (selected_error_structure %in% c("poisson", "negative_binomial")) {
+        pred_i[pred_i <= 0] <- 1e-10
+      }
+      
+      if (selected_error_structure == "normal") {
+        sigma_i <- param_samples[[paste0("sigma", i)]][iter]
+        if (sigma_i <= 0) sigma_i <- 1e-6
+        log_lik_i <- sum(dnorm(observed_data, mean = pred_i, sd = sigma_i, log = TRUE))
+        
+      } else if (selected_error_structure == "poisson") {
+        log_lik_i <- sum(dpois(observed_data, lambda = pred_i, log = TRUE))
+        
+      } else if (selected_error_structure == "negative_binomial") {
+        phi_i <- param_samples[[paste0("phi", i)]][iter]
+        if (phi_i <= 0) phi_i <- 1e-6
+        log_lik_i <- sum(dnbinom(observed_data, size = phi_i, mu = pred_i, log = TRUE))
+      }
+      
+      deviances[iter] <- -2 * log_lik_i
+    }
+    
+    D_bar <- mean(deviances)
+    pred_mean <- apply(pred_matrix, 2, mean)
+    
+    if (selected_error_structure %in% c("poisson", "negative_binomial")) {
+      pred_mean[pred_mean <= 0] <- 1e-10
+    }
+    
+    if (selected_error_structure == "normal") {
+      sigma_mean <- mean(param_samples[[paste0("sigma", i)]])
+      if (sigma_mean <= 0) sigma_mean <- 1e-6
+      log_lik_mean <- sum(dnorm(observed_data, mean = pred_mean, sd = sigma_mean, log = TRUE))
+      
+    } else if (selected_error_structure == "poisson") {
+      log_lik_mean <- sum(dpois(observed_data, lambda = pred_mean, log = TRUE))
+      
+    } else if (selected_error_structure == "negative_binomial") {
+      phi_mean <- mean(param_samples[[paste0("phi", i)]])
+      if (phi_mean <= 0) phi_mean <- 1e-6
+      log_lik_mean <- sum(dnbinom(observed_data, size = phi_mean, mu = pred_mean, log = TRUE))
+    }
+    
+    D_hat <- -2 * log_lik_mean
+    pD <- D_bar - D_hat
+    dic_results <- list(DIC = D_bar + pD, pD = pD, D_bar = D_bar, D_hat = D_hat)
+    
+    ## --- Log-likelihood matrix ---
+    n_obs <- length(observed_data)
+    log_lik_matrix <- matrix(NA, nrow = niter, ncol = n_obs)
+    
+    for (iter in 1:niter) {
+      pred_i <- pred_matrix[iter, ]
+      if (any(is.na(pred_i)) || any(is.infinite(pred_i))) next
+      
+      if (selected_error_structure == "normal") {
+        sigma_i <- param_samples[[paste0("sigma", i)]][iter]
+        if (is.na(sigma_i) || sigma_i <= 0) next
+        log_lik_matrix[iter, ] <- dnorm(observed_data, mean = pred_i, sd = sigma_i, log = TRUE)
+        
+      } else if (selected_error_structure == "poisson") {
+        pred_i[pred_i <= 0] <- 1e-10
+        log_lik_matrix[iter, ] <- dpois(observed_data, lambda = pred_i, log = TRUE)
+        
+      } else if (selected_error_structure == "negative_binomial") {
+        phi_i <- param_samples[[paste0("phi", i)]][iter]
+        if (is.na(phi_i) || phi_i <= 0) next
+        pred_i[pred_i <= 0] <- 1e-10
+        log_lik_matrix[iter, ] <- dnbinom(observed_data, size = phi_i, mu = pred_i, log = TRUE)
+      }
+    }
+    
+    ## --- Clean log-lik matrix ---
+    valid_rows <- apply(log_lik_matrix, 1, function(x) {
+      !all(is.na(x)) && !any(is.nan(x)) && !any(is.infinite(x) & x > 0)
+    })
+    
+    if (sum(valid_rows) == 0) {
+      stop(paste("No valid rows in log-likelihood matrix for dataset", i))
+    }
+    
+    log_lik_clean <- log_lik_matrix[valid_rows, , drop = FALSE]
+    log_lik_clean[is.na(log_lik_clean)] <- -1e10
+    log_lik_clean[is.nan(log_lik_clean)] <- -1e10
+    log_lik_clean[is.infinite(log_lik_clean) & log_lik_clean > 0] <- -1e10
+    log_lik_clean[log_lik_clean < -1e10] <- -1e10
+    
+    ## --- WAIC & LOO ---
+    waic_results <- waic(log_lik_clean)
+    loo_results <- loo(log_lik_clean)
+    
+    metrics_list[[paste0("metrics", i)]] <- list(
+      DIC = dic_results,
+      WAIC = waic_results,
+      LOO = loo_results
+    )
+  }
+  
+  ## --- Convert to DataFrame & Save ---
+  metrics_df <- data.frame(
+    Dataset = character(length(metrics_list)),
+    DIC = numeric(length(metrics_list)),
+    WAIC = numeric(length(metrics_list)),
+    LOO = numeric(length(metrics_list)),
+    stringsAsFactors = FALSE
+  )
+  
+  for (i in seq_along(metrics_list)) {
+    metrics <- metrics_list[[i]]
+    metrics_df[i, "Dataset"] <- names(metrics_list)[i]
+    metrics_df[i, "DIC"] <- if (!is.null(metrics$DIC) && !is.null(metrics$DIC$DIC)) metrics$DIC$DIC else NA
+    metrics_df[i, "WAIC"] <- if (!is.null(metrics$WAIC) && !is.null(metrics$WAIC$estimates)) metrics$WAIC$estimates["waic", "Estimate"] else NA
+    metrics_df[i, "LOO"] <- if (!is.null(metrics$LOO) && !is.null(metrics$LOO$estimates)) metrics$LOO$estimates["looic", "Estimate"] else NA
+  }
+  
+  write.xlsx(metrics_df, file = file.path(folder_name, "model_fit_metrics.xlsx"))
+  
+  
+  
 }
 
 
