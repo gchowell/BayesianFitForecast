@@ -20,6 +20,9 @@ vars <- c("S", "E", "I", "R", "C")
 # N: The population size. It is a fixed number for this case study: 10,000
 params <- c("beta", "gamma", "kappa", "rho","N")
 
+time_dependent_templates <- list(
+  
+)
 
 ode_system <- '
   diff_var1 = -params1 * vars3 * vars1 / params5

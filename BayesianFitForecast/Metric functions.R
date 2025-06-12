@@ -151,3 +151,6 @@ calculate_percent_within_interval_forecast <- function(actual_forecast, mcmc_int
   percent_within_interval_forecast <- cases_within_interval / length(actual_forecast) * 100
   return(percent_within_interval_forecast)
 }
+
+
+###################################################################### DIC,..

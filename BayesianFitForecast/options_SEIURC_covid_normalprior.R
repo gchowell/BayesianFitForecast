@@ -19,6 +19,10 @@ vars <- c("S", "E", "I", "U", "R", "C")
 # rho: the newly infected proportion rate. the range is: (0,1)
 params <- c("beta", "gamma", "kappa", "rho","N")
 
+time_dependent_templates <- list(
+  
+)
+
 ode_system <- '
   diff_var1 = -params1 * (vars3 + vars4) * vars1 / params5
   diff_var2 = params1 * (vars3 + vars4) * vars1 / params5 - params3 * vars2

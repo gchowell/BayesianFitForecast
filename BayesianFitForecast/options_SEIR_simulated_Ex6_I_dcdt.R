@@ -20,6 +20,10 @@ vars <- c("S", "E", "I", "R", "C")
 # N: The population size. It is a fixed number for this case study: 550,000
 params <- c("beta", "gamma", "kappa", "rho","N")
 
+time_dependent_templates <- list(
+  
+)
+
 ode_system <- '
   diff_var1 = -params1 * vars3 * vars1 / params5
   diff_var2 = params1 * vars3 * vars1 / params5 - params3 * vars2
@@ -82,7 +86,8 @@ params4_UB <- 1
 # error structure
 normalerror1_prior <- "cauchy(0, 2.5)"
 normalerror2_prior <- "cauchy(0, 2.5)"
-negbinerror_prior <- "exponential(5)"
+negbinerror1_prior <- "exponential(5)"
+negbinerror2_prior <- "exponential(5)"
 
 # Select 0 if you want the initial condition be estimated as well. Otherwise, select 1
 vars.init <- 1

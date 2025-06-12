@@ -50,6 +50,13 @@ params <- c("beta", "gamma", "kappa", "rho", "N", "i0")
 
 
 
+
+time_dependent_templates <- list(
+  
+)
+
+
+
 # Define the system of ordinary differential equations (ODEs) for the SEIR model.
 # Each equation represents the rate of change for a specific state variable over time:
 #

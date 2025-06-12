@@ -17,6 +17,10 @@ vars <- c("C")
 # N: The population size. It is a fixed number for this case study: 550,000
 params <- c("r","N")
 
+time_dependent_templates <- list(
+  
+)
+
 ode_system <- '
   diff_var1 = params1 * vars1'
 

@@ -58,7 +58,15 @@ vars <- c("S", "E", "I", "R", "C")
 # - i0: the initial number of infected individuals (not explicitly defined in the example).
 params <- c("beta", "gamma", "kappa", "rho", "N", "i0")
 
+# To define a time-dependent parameter, create a function as a string that depends on time
+# t and elements from the params vector. If there are no any time-dependent functions 
+# in the model, keep the time_dependent_templates list empty. 
+# Example: 
+#time_dependent_param1 <- "return (params1 * exp(-params2 * t));" meaning beta * e^(-gamma*t)
 
+time_dependent_templates <- list(
+
+)
 
 # Define the system of ordinary differential equations (ODEs) for the SEIR model.
 # Each equation represents the rate of change for a specific state variable over time:
