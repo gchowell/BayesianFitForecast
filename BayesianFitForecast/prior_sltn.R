@@ -3,11 +3,13 @@ library(ggplot2)
 library(readxl)
 library(gridExtra)
 library(dplyr)    
-library(tidyr)    
+library(tidyr)   
+n_prior_samples <- 200
 setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
-
+dir.create("output", showWarnings = FALSE)
 source("options_SEIR_sanfrancisco_prior.R")
-
+folder_name <- file.path("output", paste("prior-solution", model_name, sep = "-"))
+dir.create(folder_name, showWarnings = FALSE)
 state_names <- vars
 n_vars <- length(state_names)
 init_values <- Ic
@@ -119,10 +121,14 @@ ode_out <- ode(y = init_values, times = times, func = dynamic_model, parms = par
 sim_result <- as.data.frame(ode_out)
 colnames(sim_result) <- c("time", paste0("vars", seq_along(state_names)))
 
+file_name <- "state_variables.pdf"
+pdf_file <- file.path(folder_name, file_name)
+pdf(pdf_file, width = 8, height = 6)
 matplot(sim_result$time, sim_result[, -1], type = "l", lty = 1, lwd = 2,
         xlab = "Time", ylab = "Population", col = 1:length(state_names),
         main = "Model State Variables (Single Prior Sample)")
 legend("right", legend = state_names, col = 1:length(state_names), lty = 1, lwd = 2)
+dev.off()
 
 n_fitting <- length(fitting_index)
 
@@ -175,6 +181,9 @@ for (fit_idx in 1:n_fitting) {
   plot_list[[fit_idx]] <- p
 }
 
+# pdf_file <- file.path(folder_name, "model_vs_observed.pdf")
+# pdf(pdf_file, width = 10, height = 6)
+
 if (n_fitting == 1) {
   print(plot_list[[1]])
 } else if (n_fitting == 2) {
@@ -183,10 +192,10 @@ if (n_fitting == 1) {
   n_cols <- ceiling(sqrt(n_fitting))
   do.call(grid.arrange, c(plot_list, ncol = n_cols))
 }
-
+# dev.off()
 cat("\n=== MULTIPLE SAMPLES FROM PRIOR ===\n")
 
-n_prior_samples <- 100
+
 param_samples <- get_param_values(n_prior_samples)
 
 cat(sprintf("Generated %d samples from prior distributions\n", n_prior_samples))
@@ -283,13 +292,16 @@ if (length(all_trajectories) > 0) {
       geom_point(data = Mydata, 
                  aes_string(x = "days", y = obs_col), 
                  color = "red", size = 2) +
-      labs(title = paste("Prior Uncertainty (95% CI) -", vars[var_index]),
+      labs(title = paste0("Cases", fit_idx),
            x = "Time",
            y = y_label) +
       theme_minimal()
     
+    
     uncertainty_plots[[fit_idx]] <- p
   }
+  pdf_file <- file.path(folder_name, "prior_uncertainty_plots.pdf")
+  pdf(pdf_file, width = 10, height = 6)
   
   if (n_fitting == 1) {
     print(uncertainty_plots[[1]])
@@ -299,7 +311,7 @@ if (length(all_trajectories) > 0) {
     n_cols <- ceiling(sqrt(n_fitting))
     do.call(grid.arrange, c(uncertainty_plots, ncol = n_cols))
   }
-  
+  dev.off()
   cat("\n=== PARAMETER SAMPLE SUMMARY ===\n")
   param_summary <- apply(param_samples, 2, function(x) {
     c(Mean = mean(x), SD = sd(x), Min = min(x), Max = max(x))
@@ -334,7 +346,8 @@ if (length(all_trajectories) > 0) {
   n_states <- length(state_names)
   state_colors <- rainbow(n_states)
   names(state_colors) <- state_names
-  
+  all_states_data$variable <- factor(all_states_data$variable, levels = vars)
+  pdf_file <- file.path(folder_name, "all_states_prior_uncertainty.pdf")
   all_states_plot <- ggplot(all_states_data) +
     geom_ribbon(aes(x = time, ymin = q025, ymax = q975, fill = variable), 
                 alpha = 0.2) +
@@ -347,11 +360,13 @@ if (length(all_trajectories) > 0) {
          y = "Population") +
     theme_minimal() +
     theme(legend.position = "right")
-  
+  ggsave(filename = pdf_file, plot = all_states_plot, width = 10, height = 6)
   print(all_states_plot)
   
   cat("\n=== FACETED PLOT OF ALL STATE VARIABLES ===\n")
   
+  pdf_file <- file.path(folder_name, "faceted_plot.pdf")
+  all_states_data$variable <- factor(all_states_data$variable, levels = vars)
   faceted_plot <- ggplot(all_states_data) +
     geom_ribbon(aes(x = time, ymin = q025, ymax = q975), 
                 alpha = 0.3, fill = "blue") +
@@ -363,8 +378,9 @@ if (length(all_trajectories) > 0) {
          y = "Population") +
     theme_minimal() +
     theme(strip.text = element_text(size = 12, face = "bold"))
-  
+  ggsave(filename = pdf_file, plot = faceted_plot, width = 10, height = 6)
   print(faceted_plot)
+  
   
   cat("\n=== LOG SCALE VERSION ===\n")
   
@@ -373,6 +389,7 @@ if (length(all_trajectories) > 0) {
     summarise(min_val = min(q025, na.rm = TRUE), .groups = 'drop')
   
   if (all(min_vals$min_val > 0)) {
+    pdf_file <- file.path(folder_name, "log_scale_plot.pdf")
     log_scale_plot <- ggplot(all_states_data) +
       geom_ribbon(aes(x = time, ymin = q025, ymax = q975, fill = variable), 
                   alpha = 0.2) +
@@ -386,7 +403,7 @@ if (length(all_trajectories) > 0) {
            y = "Population (Log Scale)") +
       theme_minimal() +
       theme(legend.position = "right")
-    
+    ggsave(filename = pdf_file, plot = log_scale_plot, width = 10, height = 6)
     print(log_scale_plot)
   } else {
     cat("Log scale plot skipped: some variables have zero or negative values\n")
@@ -427,7 +444,7 @@ if (exists("sim_result") && length(all_trajectories) > 0) {
                  names_to = "variable_code", 
                  values_to = "value") %>%
     mutate(variable = state_names[as.numeric(gsub("vars", "", variable_code))])
-  
+  # pdf_file <- file.path(folder_name, "comparison_plot.pdf")
   comparison_plot <- ggplot() +
     geom_ribbon(data = all_states_data, 
                 aes(x = time, ymin = q025, ymax = q975, fill = variable), 
@@ -446,7 +463,7 @@ if (exists("sim_result") && length(all_trajectories) > 0) {
          caption = "Solid lines: Prior median, Dashed lines: Single sample, Ribbons: 95% CI") +
     theme_minimal() +
     theme(legend.position = "right")
-  
+  # ggsave(filename = pdf_file, plot = comparison_plot, width = 10, height = 6)
   print(comparison_plot)
 }
 

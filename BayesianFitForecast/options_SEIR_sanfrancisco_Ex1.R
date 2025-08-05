@@ -46,7 +46,7 @@ fitting_index <- c(5)
 fitting_diff <- c(1)
 
 #Select the type of error structure 1.Negative binomial 2. Normal 3. Poisson
-errstrc <- 2
+errstrc <- 3
 
 
 #Define your input file
@@ -84,7 +84,7 @@ params4_UB <- 1
 
 # Select the prior distribution when using a normal or negative binomial 
 # error structure
-normalerror1_prior <- "cauchy(0, 2.5)"
+normalerror1_prior <- "cauchy(0, 2.5)T[0,]"
 negbinerror1_prior <- "exponential(5)"
 
 # Select 0 if you want the initial condition be estimated as well. Otherwise, select 1

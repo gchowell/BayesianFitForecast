@@ -10,7 +10,7 @@ library(ggplot2)
 library(stringr)
 library(gridExtra)
 setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
-source("options_seir_timedep_Ex7.R")
+source("options_SEIR_sanfrancisco_Ex5.R")
 source("Metric functions.R")
 Mydata <- read_excel(paste0(cadfilename1, ".xlsx"))
 
