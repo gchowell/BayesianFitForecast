@@ -170,7 +170,7 @@ generate_stan_file <- function() {
   }
   if(vars.init == 0 )
   {
-    ode_function <- paste0(ode_function, "    real init[", length(vars), "] = {", paste(Ic, collapse = ", "), "};\n\n")
+    ode_function <- paste0(ode_function, "    array[", length(vars), "] real init = {", paste(Ic, collapse = ", "), "};\n\n")
     for (i in seq_along(vars)) {
       ode_function <- paste0(ode_function, "    real ", vars[i], " = y[", i, "]+init[", i, "];\n")
     }

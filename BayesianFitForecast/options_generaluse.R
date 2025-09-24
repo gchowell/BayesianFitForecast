@@ -103,16 +103,18 @@ composite_expressions <- list(
 
 
 # Specify the index of the model variable that will be fitted to the observed time series data.
-# In this case, fitting_index is set to c(3,5), indicating that the model will fit the second 
+# For example, fitting_index is set to c(3,5), indicates that the model will fit the second 
 #  column in the data to the infectious (I) and the third column in the data to the 
-# cumulative cases variable (C) in the SEIR model.
-fitting_index <- c(3,5)
+# cumulative cases variable (C) in the SEIR model. Here, fitting_index is set to c(5), indicating
+# that we the second column in the data is fitted to the cumulative cases (C). 
+fitting_index <- c(5)
 
 
 # Boolean variable indicating whether the derivative of the model's fitting variable should be fitted to the data.
 # Here, a value of 1 (true) means the data will be fitted to dC/dt (the rate of change of cumulative cases),
-# while a value of 0 (false) would indicate that the data will be fitting to I (the number of infectious people)
-fitting_diff <-c(0,1)
+# while a value of 0 (false) would indicate that the data will be fitting to I (the number of infectious people) 
+# Therefore if fitting_index <- c(3,5) and fitting_diff <-c(0,1) means we fit second column -> I, and third -> dC/dt
+fitting_diff <-c(1)
 
 
 
