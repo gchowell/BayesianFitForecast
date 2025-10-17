@@ -41,7 +41,7 @@ This project is licensed under the Creative Commons Attribution-NonCommercial-Sh
 
 If you use this toolbox in your research, please cite the following paper:
 
-Karami, H., Bleichrodt, A., Luo, R., & Chowell, G. (2024). BayesianFitForecast: An R toolbox for parameter estimation and forecasting with quantified uncertainty in ordinary differential equation models. BMC Medical Informatics and Decision Making [LINK](https://bmcmedinformdecismak.biomedcentral.com/articles/10.1186/s12911-025-03208-z)
+Karami, H., Bleichrodt, A., Luo, R. et al. BayesianFitForecast: a user-friendly R toolbox for parameter estimation and forecasting with ordinary differential equations. BMC Med Inform Decis Mak 25, 385 (2025).[LINK](https://doi.org/10.1186/s12911-025-03208-z)
 
 
 
