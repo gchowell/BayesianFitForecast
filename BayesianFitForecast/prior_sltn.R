@@ -22,15 +22,102 @@ ode_rhs <- function(index, ode_system) {
   return(rhs)
 }
 
+get_time_dependent_templates <- function() {
+  templates <- get0("time_dependent_templates", ifnotfound = list(), inherits = TRUE)
+  if (is.null(templates) || length(templates) == 0) {
+    return(list())
+  }
+  if (is.null(names(templates)) || any(!nzchar(names(templates)))) {
+    names(templates) <- paste0("time_dependent_param", seq_along(templates))
+  }
+  templates
+}
+
+evaluate_time_dependent_templates <- function(time, param_values,
+                                              time_dependent_templates = get_time_dependent_templates()) {
+  if (is.null(time_dependent_templates) || length(time_dependent_templates) == 0) {
+    return(list())
+  }
+
+  param_values <- as.numeric(param_values)
+  param_names <- paste0("params", seq_along(param_values))
+  param_env <- setNames(as.list(param_values), param_names)
+
+  # `return(...)` in template strings is legal only inside a function, so each
+  # template is wrapped in a tiny zero-argument function whose parent environment
+  # contains the current time and sampled parameter values.
+  template_env <- list2env(
+    c(
+      list(
+        t = as.numeric(time),
+        time = as.numeric(time),
+        pi = base::pi,
+        pow = function(x, y) x^y
+      ),
+      param_env
+    ),
+    parent = baseenv()
+  )
+
+  values <- vector("list", length(time_dependent_templates))
+  names(values) <- names(time_dependent_templates)
+
+  for (template_name in names(time_dependent_templates)) {
+    template <- as.character(time_dependent_templates[[template_name]])[1]
+    if (is.na(template) || !nzchar(trimws(template))) {
+      stop("Time-dependent template '", template_name, "' is empty.")
+    }
+
+    # Some templates are Stan-like and use pi(); R exposes pi as a constant.
+    template <- gsub("\\bpi\\s*\\(\\s*\\)", "pi", template, perl = TRUE)
+    template_fun <- eval(parse(text = paste0("function() {", template, "}")),
+                         envir = template_env)
+    value <- template_fun()
+
+    if (!is.numeric(value) || length(value) != 1 || is.na(value)) {
+      stop("Time-dependent template '", template_name,
+           "' did not evaluate to a single numeric value.")
+    }
+    values[[template_name]] <- as.numeric(value)
+  }
+
+  values
+}
+
+make_rhs_eval_env <- function(time, state_values, param_values,
+                              time_dependent_templates = get_time_dependent_templates()) {
+  param_values <- as.numeric(param_values)
+  state_values <- as.numeric(state_values)
+
+  param_names <- paste0("params", seq_along(param_values))
+  state_names <- paste0("vars", seq_along(state_values))
+
+  param_env <- setNames(as.list(param_values), param_names)
+  state_env <- setNames(as.list(state_values), state_names)
+  time_dep_env <- evaluate_time_dependent_templates(
+    time = time,
+    param_values = param_values,
+    time_dependent_templates = time_dependent_templates
+  )
+
+  list2env(
+    c(
+      list(
+        t = as.numeric(time),
+        time = as.numeric(time),
+        pow = function(x, y) x^y
+      ),
+      param_env,
+      state_env,
+      time_dep_env
+    ),
+    parent = baseenv()
+  )
+}
+
 dynamic_model <- function(time, state, parameters) {
-  param_names <- paste0("params", seq_along(parameters))
-  state_names <- paste0("vars", seq_along(state))
-  
-  param_env <- setNames(as.list(parameters), param_names)
-  state_env <- setNames(as.list(state), state_names)
-  
-  env <- list2env(c(param_env, state_env))
-  
+  env <- make_rhs_eval_env(time, state, parameters)
+
   derivs <- numeric(length(state))
   ode_lines <- strsplit(ode_system, "\n")[[1]]
   ode_lines <- ode_lines[nzchar(trimws(ode_lines))]
@@ -139,12 +226,13 @@ for (fit_idx in 1:n_fitting) {
   if (use_diff == 1) {
     rhs_expr <- ode_rhs(var_index, ode_system)
     fit_values <- sapply(1:nrow(sim_result), function(i) {
-      param_names <- paste0("params", seq_along(param_values))
-      param_env <- setNames(as.list(param_values), param_names)
       state_cols <- paste0("vars", seq_along(state_names))
       state_values <- as.numeric(sim_result[i, state_cols])
-      state_env <- setNames(as.list(state_values), state_cols)
-      env <- list2env(c(param_env, state_env))
+      env <- make_rhs_eval_env(
+        time = sim_result$time[i],
+        state_values = state_values,
+        param_values = param_values
+      )
       eval(parse(text = rhs_expr), envir = env)
     })
     sim_result[[paste0("fit_var", fit_idx)]] <- fit_values
@@ -241,11 +329,13 @@ if (length(all_trajectories) > 0) {
           names(current_params) <- paste0("params", seq_along(params))
           
           fit_values <- sapply(1:nrow(sim_data), function(i) {
-            param_env <- setNames(as.list(current_params), names(current_params))
             state_cols <- paste0("vars", seq_along(state_names))
             state_values <- as.numeric(sim_data[i, state_cols])
-            state_env <- setNames(as.list(state_values), state_cols)
-            env <- list2env(c(param_env, state_env))
+            env <- make_rhs_eval_env(
+              time = sim_data$time[i],
+              state_values = state_values,
+              param_values = current_params
+            )
             eval(parse(text = rhs_expr), envir = env)
           })
           
