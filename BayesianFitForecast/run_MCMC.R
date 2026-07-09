@@ -95,8 +95,10 @@ for(calibrationperiod in calibrationperiods){
       param_samples[[paste0("phi", i, "_samples")]] <- s[[paste0("phi", i)]]
     }
   } else if (errstrc == 2) {
-    assign(paste0("sigma", i, "_samples"), s[[paste0("sigma", i)]])
-    param_samples[[paste0("sigma", i, "_samples")]] <- s[[paste0("sigma", i)]]
+    for (i in 1:length(fitting_index)) {
+      assign(paste0("sigma", i, "_samples"), s[[paste0("sigma", i)]])
+      param_samples[[paste0("sigma", i, "_samples")]] <- s[[paste0("sigma", i)]]
+    }
   }
   composite_samples <- list()
   for (name in names(composite_expressions)) {

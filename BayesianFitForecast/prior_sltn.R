@@ -354,8 +354,8 @@ if (length(all_trajectories) > 0) {
     geom_line(aes(x = time, y = median, color = variable), 
               linewidth = 1.2) +
     scale_color_manual(values = state_colors, name = "State Variables") +
-    scale_fill_manual(values = state_colors, name = "95% CI") +
-    labs(title = "All ODE State Variables with Prior Uncertainty (95% CI)",
+    scale_fill_manual(values = state_colors, name = "95% prior trajectory interval") +
+    labs(title = "All ODE State Variables with Prior Uncertainty (95% prior trajectory interval)",
          x = "Time",
          y = "Population") +
     theme_minimal() +
@@ -396,7 +396,7 @@ if (length(all_trajectories) > 0) {
       geom_line(aes(x = time, y = median, color = variable), 
                 linewidth = 1.2) +
       scale_color_manual(values = state_colors, name = "State Variables") +
-      scale_fill_manual(values = state_colors, name = "95% CI") +
+      scale_fill_manual(values = state_colors, name = "95% prior trajectory interval") +
       scale_y_log10() +
       labs(title = "All ODE State Variables (Log Scale) with Prior Uncertainty",
            x = "Time",
@@ -456,11 +456,11 @@ if (exists("sim_result") && length(all_trajectories) > 0) {
               aes(x = time, y = value, color = variable), 
               linewidth = 1, linetype = "dashed") +
     scale_color_manual(values = state_colors, name = "State Variables") +
-    scale_fill_manual(values = state_colors, name = "95% CI") +
+    scale_fill_manual(values = state_colors, name = "95% prior trajectory interval") +
     labs(title = "Comparison: Single Sample (dashed) vs Prior Uncertainty (solid + ribbon)",
          x = "Time",
          y = "Population",
-         caption = "Solid lines: Prior median, Dashed lines: Single sample, Ribbons: 95% CI") +
+         caption = "Solid lines: Prior median, Dashed lines: Single sample, Ribbons: 95% prior trajectory interval") +
     theme_minimal() +
     theme(legend.position = "right")
   # ggsave(filename = pdf_file, plot = comparison_plot, width = 10, height = 6)

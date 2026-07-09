@@ -42,8 +42,7 @@ vars <- c("S", "E", "I", "R", "C")
 # - gamma: the recovery rate of infected individuals, with an expected range of (0, 10).
 # - kappa: the incubation rate, representing the rate at which exposed individuals become infected,
 #   with an expected range of (0, 10).
-# - rho: the recovery proportion rate, indicating the fraction of infected individuals that recover,
-#   with an expected range of (0, 1).
+# rho: reporting proportion
 # - N: the total population size (not explicitly defined in the example).
 # - i0: the initial number of infected individuals (not explicitly defined in the example).
 params <- c("beta", "gamma", "kappa", "rho", "N", "i0")
@@ -84,7 +83,7 @@ ode_system <- '
 # - paramsfix[1]: For beta (transmission rate). 0 means it will be estimated.
 # - paramsfix[2]: For gamma (recovery rate). 0 means it will be estimated.
 # - paramsfix[3]: For kappa (incubation rate). 0 means it will be estimated.
-# - paramsfix[4]: For rho (recovery proportion rate). 0 means it will be estimated.
+# rho: reporting proportion
 # - paramsfix[5]: For N (total population size). 1 means it is fixed.
 # - paramsfix[6]: For i0 (initial number of infected individuals). 0 means it will be estimated.
 paramsfix <- c(0, 0, 0, 0, 1, 0)
@@ -176,10 +175,10 @@ datetype <- "Days"
 #   - Exponential distribution: "exponential(1)" - Ensures positivity while modeling rates.
 #   - Uniform distribution: "uniform(0, 10)" - Assumes the parameter is equally likely to take any value in the range [0, 10].
 #
-# - params4_prior: Prior distribution for rho (recovery proportion rate).
+# rho: reporting proportion
 #   - Normal distribution: "normal(0, 1)T[0,]" - Truncated normal with mean 0 and standard deviation 1.
 #   - Beta distribution: "beta(1, 1)" - Suitable for proportions, defined between 0 and 1.
-#   - Uniform distribution: "uniform(0, 1)" - Assumes the recovery proportion is equally likely to take any value in the range [0, 1].
+# rho: reporting proportion
 #
 # - params5_prior: A fixed value of 1000000 for N (total population size).
 #
@@ -204,7 +203,7 @@ params6_prior <- "normal(0, 10)T[0,]"
 # - params1_LB: Lower bound for beta (transmission rate). Set to 0.
 # - params2_LB: Lower bound for gamma (recovery rate). Set to 0.
 # - params3_LB: Lower bound for kappa (incubation rate). Set to 0.
-# - params4_LB: Lower bound for rho (recovery proportion rate). Set to 0.
+# rho: reporting proportion
 # - params6_LB: Lower bound for i0 (initial number of infected individuals). Set to 0.
 params1_LB <- 0
 params2_LB <- 0
@@ -218,7 +217,7 @@ params6_LB <- 0
 # - params1_UB: Upper bound for beta (transmission rate). Set to NA, indicating no upper limit.
 # - params2_UB: Upper bound for gamma (recovery rate). Set to NA, indicating no upper limit.
 # - params3_UB: Upper bound for kappa (incubation rate). Set to NA, indicating no upper limit.
-# - params4_UB: Upper bound for rho (recovery proportion rate). Set to 1, as it is a proportion.
+# rho: reporting proportion
 # - params6_UB: Upper bound for i0 (initial number of infected individuals). Set to NA, indicating no upper limit.
 params1_UB <- NA
 params2_UB <- NA

@@ -10,7 +10,7 @@ library(ggplot2)
 library(stringr)
 library(gridExtra)
 setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
-source("options_SEIR_sanfrancisco_Ex5.R")
+source("options_SEIR_sanfrancisco_Ex1.R")
 source("Metric functions.R")
 Mydata <- read_excel(paste0(cadfilename1, ".xlsx"))
 
@@ -85,8 +85,9 @@ for(calibrationperiod in calibrationperiods){
     
     # Plot histogram
     hist(current_samples, 
-         main = paste("Median:", medians[i], "Mean:", means[i], "95% CI:",
-                      lower_bounds[i], ", ", upper_bounds[i]), 
+         main = sprintf("Median: %.2f, Mean: %.2f, 95%% CrI: %s",
+                        medians[i], means[i],
+                        sprintf("(%.2f, %.2f)", lower_bounds[i], upper_bounds[i])), 
          xlab = pars[i], 
          ylab = "Frequency", 
          col = "lightblue", 
@@ -136,8 +137,9 @@ for(calibrationperiod in calibrationperiods){
     
     # Plot histogram
     hist(current_samples, 
-         main = paste(name, "- Median:", composite_medians, "Mean:", composite_means, "95% CI:",
-                      composite_lower_bounds, ", ", composite_upper_bounds), 
+         main = sprintf("%s - Median: %.2f, Mean: %.2f, 95%% CrI: %s",
+                        name, composite_medians, composite_means,
+                        sprintf("(%.2f, %.2f)", composite_lower_bounds, composite_upper_bounds)), 
          xlab = name, 
          ylab = "Frequency", 
          col = "lightblue", 
@@ -273,7 +275,7 @@ for(calibrationperiod in calibrationperiods){
                         get(paste0("mse", i, "_forecast")), 
                         get(paste0("wis", i, "_forecast")), 
                         get(paste0("coverage", i, "_forecast"))),
-        row.names = c("mae", "mse", "WIS", "Coverage")
+        row.names = c("mae", "mse", "WIS", "Coverage of 95% PI")
       )
       
       # Create the file path with series_cases[i]
@@ -328,13 +330,28 @@ for(calibrationperiod in calibrationperiods){
     
     # Plotting
     plot <- ggplot(data, aes(x = Date)) +
-      geom_point(aes(y = Data), shape = 21, color = "black", fill = NA, size = 1.5, stroke = 0.7, show.legend = FALSE) +
-      geom_line(aes(y = median), color = "red", size = 1, show.legend = FALSE) +
-      geom_line(aes(y = LB), color = "black", linetype = "dashed", size = 0.5, show.legend = FALSE) +
-      geom_line(aes(y = UB), color = "black", linetype = "dashed", size = 0.5, show.legend = FALSE) +
-      labs(title = '', x = datetype, y = series_cases[i]) + 
-      theme_minimal()
-    
+      geom_line(aes(y = LB, color = "95% PI", linetype = "95% PI"), size = 0.5) +
+      geom_line(aes(y = UB, color = "95% PI", linetype = "95% PI"), size = 0.5) +
+      geom_line(aes(y = median, color = "Posterior median", linetype = "Posterior median"), size = 1) +
+      geom_point(aes(y = Data, shape = "Observed data"), color = "black", fill = NA, size = 1.5, stroke = 0.7) +
+      scale_color_manual(values = c("Posterior median" = "red", "95% PI" = "black")) +
+      scale_linetype_manual(values = c("Posterior median" = "solid", "95% PI" = "dashed")) +
+      scale_shape_manual(values = c("Observed data" = 21)) +
+      guides(
+        shape = guide_legend(order = 1, override.aes = list(fill = NA)),
+        color = guide_legend(order = 2),
+        linetype = guide_legend(order = 2)
+      ) +
+      labs(title = '', x = datetype, y = series_cases[i],
+           color = NULL, linetype = NULL, shape = NULL) +
+      theme_minimal() +
+      theme(
+        legend.position = "top",
+        legend.direction = "horizontal",
+        legend.box = "horizontal",
+        legend.title = element_blank()
+      )
+
     # Add the vertical line conditionally
     if (forecastinghorizon > 0) {
       plot <- plot + geom_vline(xintercept = calibrationperiod - 1, linetype = "dotted", size = 1, color = "blue", show.legend = FALSE)
@@ -367,7 +384,7 @@ for(calibrationperiod in calibrationperiods){
     median_value <- round(median(current_samples), digits = 2)
     # Calculate mean
     mean_value <- round(mean(current_samples), digits = 2)
-    # Extract lower and upper bounds of the CI
+    # Extract lower and upper bounds of the 95% credible interval
     lower_bound <- round(mcmc_interval[1], digits = 2)
     upper_bound <- round(mcmc_interval[2], digits = 2)
     
@@ -377,8 +394,9 @@ for(calibrationperiod in calibrationperiods){
       parameter = pars[i],  # Assuming pars contains parameter names
       median = median_value,
       mean = mean_value,
-      lower_bound = lower_bound,
-      upper_bound = upper_bound
+      `95% CrI lower` = lower_bound,
+      `95% CrI upper` = upper_bound,
+      check.names = FALSE
     )
     
     # Append the current parameter data to result_data
@@ -416,8 +434,8 @@ for(calibrationperiod in calibrationperiods){
     n_eff_value <- round(summary(fit_ode_model)$summary[param, "n_eff"], 2)
     Rhat_value <- round(summary(fit_ode_model)$summary[param, "Rhat"], 2)
     
-    # Construct CI_95 string for the current parameter
-    CI_95 <- paste("(", round(mcmc_interval[1], 2), ",", round(mcmc_interval[2], 2), ")")
+    # Construct 95% credible interval string for the current parameter
+    credible_interval_95 <- sprintf("(%.2f, %.2f)", mcmc_interval[1], mcmc_interval[2])
     
     # Create a data frame for the current parameter
     parameter_data <- data.frame(
@@ -425,9 +443,10 @@ for(calibrationperiod in calibrationperiods){
       Parameter = param,
       Mean = mean_value,
       Median = median_value,
-      CI_95 = CI_95,
+      `95% CrI` = credible_interval_95,
       N_eff = n_eff_value,
-      Rhat = Rhat_value
+      Rhat = Rhat_value,
+      check.names = FALSE
     )
     
     # Append parameter_data to result_data2

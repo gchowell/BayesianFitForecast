@@ -16,8 +16,8 @@ vars <- c("S", "E", "I", "R", "C")
 # beta: the transmission rate. the range for the flu 1918 is (0,2)
 # gamma: the recovery rate. the range for the flu 1918 is (0,1)
 # kappa: the incubation rate. the range for the flu 1918 is (0,2)
-# rho: the recovery proportion rate. the range for the flu 1918 is (0,1)
-# N: The population size. It is a fixed number for this case study: 550,000
+# rho: reporting proportion
+# N: The population size. It is a fixed number for this case study: 10,000
 params <- c("beta", "gamma", "kappa", "rho","N")
 
 ode_system <- '

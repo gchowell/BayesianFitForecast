@@ -16,7 +16,7 @@ vars <- c("S", "E", "I", "R", "D")
 # beta: the transmission rate. the range for the Bombay plague is (0,10)
 # gamma: the recovery/death rate. the range for the Bombay plague is (0,10)
 # kappa: the incubation rate. the range for the Bombay plague is (0,10)
-# rho: the death proportion rate. the range is (0,1)
+# rho: reporting proportion
 # N: The population size. It is a fixed number for this case study: 100,000
 params <- c("beta", "gamma", "kappa", "rho","N")
 

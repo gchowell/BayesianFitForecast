@@ -16,8 +16,8 @@ vars <- c("S", "E", "I", "R", "C")
 # beta: the transmission rate. the range for this experiment is considered wide: (0,25)
 # gamma: the recovery rate. the range for this experiment is considered wide: (0,25)
 # kappa: the incubation rate. the range for this experiment is considered wide: (0,25)
-# rho: the recovery proportion rate. the range for this parameter is (0,1)
-# N: The population size. It is a fixed number for this case study: 100,000
+# rho: reporting proportion
+# N: fixed population size 100,000
 params <- c("beta", "gamma", "kappa", "rho","N")
 
 time_dependent_templates <- list(

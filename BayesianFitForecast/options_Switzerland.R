@@ -1,7 +1,7 @@
 # options.R
 
 # Set the calibration period and forecasting horizon
-calibrationperiods <- c(65)
+calibrationperiods <- c(57)
 
 # Set the calibration period and forecasting horizon
 forecastinghorizon <- 20
@@ -110,7 +110,7 @@ vars.init <- 1
 Ic = c(8522629,0,1,0,0,1,1)
 
 # number of MCMC steps
-niter <- 2000
+niter <- 3000
 
 # number of chains
 num_chain = 2

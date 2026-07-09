@@ -16,7 +16,7 @@ vars <- c("S", "E", "I", "U", "R", "C")
 # beta: the transmission rate. the range for the Switzerland COVID is (0,4)
 # gamma: the recovery/death rate. For the Switzerland COVID, it is a fixed number equal to 1.
 # kappa: the incubation rate. For the Switzerland COVID, it is a fixed number equal to 1.
-# rho: the newly infected proportion rate. the range is: (0,1)
+# rho: reporting proportion
 params <- c("beta", "gamma", "kappa", "rho","N")
 
 time_dependent_templates <- list(
