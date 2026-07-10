@@ -10,8 +10,10 @@
   source("diff.R")
   source("ode_rhs.R")
   source("stancreator.R")
-  
-  
+  # Delegate time-dependent-capable Stan generation to the MAIN stancreator.R.
+  source("generate_stan_delegate.R")
+
+
 run_MCMC <- function(outputFile, data.temp){
   
   ###################################################
@@ -26,9 +28,11 @@ run_MCMC <- function(outputFile, data.temp){
   # Creating the temp file path for the stan file #
   #################################################
   stan_file <- file.path(tempdir(), "ode_model.stan")
-  
-  # Generating the STAN code 
-  stan_code <- generate_stan_file(optionsFile = options_file)
+
+  # Generating the STAN code (delegated to the main updated stancreator.R,
+  # which supports time_dependent_templates).
+  stan_code <- generate_stan_file_delegated(optionsFile = options_file,
+                                            stan_file = stan_file)
   
   # Saving the Stan file to the temp directory 
   writeLines(stan_code, stan_file)

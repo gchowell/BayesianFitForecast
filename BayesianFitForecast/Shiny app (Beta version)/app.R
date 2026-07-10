@@ -8,7 +8,7 @@
     "shiny", "shinydashboard", "shinyWidgets", "ggplot2", "plotly", "DT", "mathjaxr",
     "readxl", "shinyjqui", "devtools", "bayesplot", "xlsx", "openxlsx", "rstan", 
     "shinyjs", "BayesianFitForecast", "stringr", "shinybusy", "eList",
-    "shinyalert", "glue", "remotes"
+    "shinyalert", "glue", "remotes", "jsonlite"
   )
   
   # Function to check and install if needed
@@ -55,6 +55,46 @@
   source("ode_rhs.R")
   source("stancreator.R")
   source("run_MCMC2.R")
+
+  ###########################################
+  # Time-dependent parameters (new feature) #
+  ###########################################
+  # Structured template library + Shiny module + Stan-generation delegation to
+  # the MAIN updated stancreator.R (which supports time_dependent_templates).
+  source("time_dependent_templates_lib.R")
+  source("time_dependent_module.R")
+  source("ode_equation_builder_module.R")
+  source("generate_stan_delegate.R")
+
+  #############################################################################
+  # Display-name -> internal-identifier mapping                               #
+  #############################################################################
+  # Parameters may be entered as LaTeX/display names (e.g. "\\beta_0",         #
+  # "t_{int}"). Stan needs valid identifiers ("beta0", "tint"). This helper    #
+  # tries latex2r first (so valid LaTeX like "\\gamma" -> "gamma"); if latex2r #
+  # fails (e.g. "t_{int}" throws) or does not yield a clean identifier (e.g.   #
+  # plain "beta0" mangles to "b * exp(1) * t * a * 0"), it falls back to       #
+  # stripping LaTeX punctuation. This is what fixes the "check parameters"     #
+  # error for names like t_{int}.                                             #
+  to_internal_name <- function(raw) {
+    raw <- trimws(as.character(raw))
+    if (!nzchar(raw)) return(raw)
+    out <- tryCatch(
+      paste0(latex2r(raw)),
+      latex2r.error = function(e) NA_character_,
+      error = function(e) NA_character_
+    )
+    if (length(out) != 1 || is.na(out) || !grepl("^[A-Za-z][A-Za-z0-9_]*$", out)) {
+      out <- gsub("\\\\", "", raw)          # drop backslashes:  \beta_0 -> beta_0
+      out <- gsub("[{}]", "", out)          # drop braces:       t_{int} -> t_int
+      out <- gsub("_", "", out)             # drop underscores:  beta_0  -> beta0
+      out <- gsub("[^A-Za-z0-9]", "", out)  # drop anything else
+      if (!nzchar(out) || !grepl("^[A-Za-z]", out)) out <- paste0("p", out)
+    }
+    # Keep the established options-file convention: "\\beta_0" -> "beta0".
+    out <- gsub("_", "", out, fixed = TRUE)
+    out
+  }
 
 
 #------------------------------------------------------------------------------#
@@ -415,9 +455,32 @@ ui <- dashboardPage(
 # use of RStan.                                                                #
 #------------------------------------------------------------------------------#
 
+#------------------------------------------------------------------------------#
+# Time-Dependent Parameters Tab (placed before System of Equations) ------------#
+#------------------------------------------------------------------------------#
+# About: Lets users define time-varying parameters (e.g. beta(t)). It depends  #
+# on the declared parameters and precedes System of Equations because the ODEs #
+# reference the time-dependent parameters.                                     #
+#------------------------------------------------------------------------------#
+
   tabPanel(
-    
-    # Title 
+
+    # Title
+    title = "Time-Dependent Parameters",
+
+    value = "TimeDep",
+
+    # Width
+    width = 12,
+
+    # Module UI (see time_dependent_module.R)
+    tdpUI("tdp")
+
+  ),
+
+  tabPanel(
+
+    # Title
     title = "System of Equations",
     
     value = "ODESys", 
@@ -428,7 +491,7 @@ ui <- dashboardPage(
     #########################################
     # Creating the inputs for ODE equations #
     #########################################
-    div(id = "equationContainer"),
+    odeBuilderUI("odeb"),
     
     # Loading the upload equation button
     actionButton("loadEquation", label = "Upload Equations")
@@ -455,11 +518,9 @@ ui <- dashboardPage(
     
     # Loading the upload equation button
     actionButton("loadComposite", label = "Upload Equations")
-    
+
   )
 
-  
-  
   ), # End of 'tabBox'
 
 #------------------------------------------------------------------------------#
@@ -761,7 +822,7 @@ server <- function(input, output, session) {
     ####################################
     }, error = function(e){
       
-      print("The timeseries data did not load properly.")
+      listTimeseries$data <- NULL
       
     }) # End of 'tryCatch'
     
@@ -1197,6 +1258,8 @@ server <- function(input, output, session) {
   ###################################################
   # Observe selections and update available choices #
   ###################################################
+  vars_choices_cache <- reactiveValues()
+
   observe({
     
     # All available letters 
@@ -1208,11 +1271,34 @@ server <- function(input, output, session) {
     # Looping through state variables 
     for (i in 1:input$vars) {
       
+      # Current value for this row. If the row is still initializing, leave it
+      # alone; updating a selectize input while it is initializing or while the
+      # user is opening it can make the dropdown appear not to open.
+      current_value <- input[[paste0("varsID_", i)]]
+      if (is.null(current_value) || !nzchar(current_value)) {
+        next
+      }
+
       # Determining what letters can be selected 
-      available_choices <- setdiff(all_letters, selected[selected != input[[paste0("varsID_", i)]]])  
+      available_choices <- setdiff(all_letters, selected[selected != current_value])
+      if (!(current_value %in% available_choices)) {
+        available_choices <- c(current_value, available_choices)
+      }
+
+      # Updating an unchanged selectize control can close its dropdown. Before
+      # the token-based ODE builder, this eager update was mostly invisible; the
+      # builder adds another live consumer of selectedValues(), so avoid
+      # refreshing the control unless the choice set actually changed.
+      cache_key <- paste0("varsID_", i)
+      choices_key <- paste(available_choices, collapse = "\r")
+      if (identical(vars_choices_cache[[cache_key]], choices_key)) {
+        next
+      }
       
       # Updating the select options based on previously selected options
-      updateSelectInput(session, paste0("varsID_", i), choices = available_choices, selected = input[[paste0("varsID_", i)]])
+      freezeReactiveValue(input, cache_key)
+      updateSelectInput(session, cache_key, choices = available_choices, selected = current_value)
+      vars_choices_cache[[cache_key]] <- choices_key
       
     }
     
@@ -2653,78 +2739,10 @@ server <- function(input, output, session) {
 #------------------------------------------------------------------------------#
 # Specifying the system of ODEs ------------------------------------------------
 #------------------------------------------------------------------------------#
-# About: This section creates the rows for users to specify the system of ODEs.#
-# The user selects how many equations are in the system, and then the number   #
-# of rows appears. The user can delete rows as needed.                         #
+# About: The System of Equations tab now uses odeBuilderUI()/odeBuilderServer()
+# to render token-based ODE cards. This replaces the previous free-text
+# shinymath::mathInput() rows and avoids latex2r parsing for ODE equations.
 #------------------------------------------------------------------------------#
-  
-  rowCounter <- reactiveVal(0)
-  
-  ###########################################
-  # Observing changes in the number of rows #
-  ###########################################
-  observeEvent(input$vars, {
-    
-    # The current number of rows 
-    current_rows <- rowCounter()
-    
-    # The number of rows there should be 
-    new_rows <- input$vars
-    
-    #######################################
-    # Add new rows if the count increases #
-    #######################################
-    if (new_rows > current_rows) {
-      
-      # Adding the number of rows based upon the number selected by the user
-      for (i in (current_rows + 1):new_rows) {
-        
-        ############################
-        # Creating the UI for rows #
-        ############################
-        insertUI(
-          
-          # Label for UI
-          selector = "#equationContainer",
-          
-          # Where to add the row 
-          where = "beforeEnd",
-          
-          # Creating the UI 
-          ui = div(
-            id = paste0("line_", i),
-            class = "equation-line",
-            style = "margin: 10px 0; padding: 10px; border: 1px solid #ddd; background-color: #f4f4f4; min-height: 50px;",
-            contentEditable = "false", 
-            mathInput(paste0("math_", i), label = paste0("Equation ", i))
-            
-          )
-          
-        ) # End of insert UI
-        
-      } # End of loop to create rows 
-      
-    } # End of indicator that new rows should be added 
-    
-    ############################################
-    # Remove extra rows if the count decreases #
-    ############################################
-    if (new_rows < current_rows) {
-      
-      # Removing rows to reach the current row count specified 
-      for (i in (new_rows + 1):current_rows) {
-        
-        # Removing the row 
-        removeUI(selector = paste0("#line_", i))
-        
-      } # End of loop to remove rows 
-      
-    } # End of indicator that existing rows should be removed 
-    
-    # Specifying the new row count 
-    rowCounter(new_rows)
-        
-  }) # End of 'observe event'
   
   
 #------------------------------------------------------------------------------#
@@ -3326,7 +3344,59 @@ server <- function(input, output, session) {
   # Saving the list of non-Latex parameters #
   ###########################################
   paramsFinal <- reactiveValues()
-  
+
+  ############################################################
+  # Time-dependent parameters module                         #
+  ############################################################
+  # Build choices directly from the LIVE Parameter Specification values.
+  # `paramsFinal$params` is intentionally not used here because it is populated
+  # only after "Upload Equations" is clicked. Names are display/LaTeX labels
+  # (e.g. "\\beta_0") and values are internal identifiers (e.g. "beta0").
+  # The same to_internal_name() conversion is used when paramsFinal$params is
+  # committed, keeping dropdown values and options-file parameter positions
+  # aligned (beta0 -> params1, ...).
+  # Returns a reactive with $code (the time_dependent_templates block), $names, $specs.
+  tdp <- tdpServer("tdp", reactive({
+    disp <- parameters.list$list
+    if (is.null(disp) || length(disp) == 0) {
+      return(character(0))
+    }
+    disp <- trimws(as.character(disp))
+    intl <- vapply(disp, to_internal_name, character(1))
+    complete <- nzchar(disp) & nzchar(intl)
+    stats::setNames(intl[complete], disp[complete])
+  }))
+
+  ############################################################
+  # Token-based ODE equation builder                         #
+  ############################################################
+  # The builder receives display labels for buttons but stores exact positional
+  # tokens. Example: label "\\gamma" -> serial "params4", label "S" -> "vars1",
+  # label "\\beta(t)" -> "time_dependent_param1". This keeps the app's existing
+  # options-file / stancreator.R contract while removing latex2r from ODE entry.
+  ode_builder <- odeBuilderServer(
+    "odeb",
+    n_equations = reactive(input$vars),
+    states_reactive = reactive({
+      vals <- selectedValues()
+      if (is.null(vals) || length(vals) == 0) return(character(0))
+      vals <- trimws(as.character(vals))
+      complete <- nzchar(vals)
+      stats::setNames(paste0("vars", seq_along(vals))[complete], vals[complete])
+    }),
+    params_reactive = reactive({
+      disp <- parameters.list$list
+      if (is.null(disp) || length(disp) == 0) return(character(0))
+      disp <- trimws(as.character(disp))
+      complete <- nzchar(disp)
+      stats::setNames(paste0("params", seq_along(disp))[complete], disp[complete])
+    }),
+    tdp_reactive = tdp,
+    fitting_diff_reactive = reactive({
+      na.omit(vector.fit.diff.state$state)
+    })
+  )
+
   # Error catcher
   errorCatch.temp <- reactiveVal(0)
   
@@ -3357,11 +3427,14 @@ server <- function(input, output, session) {
         
       }
       
-      # Building error to check parameter parsing 
+      # Building error to check parameter parsing
       tryCatch({
-        
-        # Latex to text 
-        params.text <- latex2r(param.index)
+
+        # Display/LaTeX name -> valid internal identifier. Uses latex2r when it
+        # yields a clean identifier, else strips LaTeX punctuation. This avoids
+        # the latex2r parse error on names like t_{int} (braced multi-char
+        # subscript) that previously triggered the "check parameters" error.
+        params.text <- to_internal_name(param.index)
 
         # Adding the parameters to the array
         params.temp <- c(params.temp, params.text)
@@ -3397,131 +3470,53 @@ server <- function(input, output, session) {
       params.temp.list <- NULL
       
     }
+
+    if (is.null(params.temp.list)) {
+      paramsFinal$params <- NULL
+      odeEquation$system <- NULL
+      odeEquation$rhs <- NULL
+      odeEquation$display <- NULL
+      odeEquation$ic_rhs <- NULL
+      return(NULL)
+    }
     
     ################################################
     # Adding the parameters to the reactive values #
     ################################################
     paramsFinal$params <- params.temp.list
-    
-    ##############################################
-    # Collecting the equations into one variable #
-    ##############################################
-    equations <- sapply(1:input$vars, function(i) {
-      
-      # Adding each equation 
-      equation <- as.character(input[[paste0("math_", i)]])
-      
-      equation.temp <- NULL
-      
-      # Error checkers
-      error.check.temp <- 0
-      
-      ###############################################
-      # Checking if any equations have been entered #
-      ###############################################
-      if(nchar(equation) == 0){
-        
-        # Switching the error checker
-        error.check.temp <- 1
-        
-        # Error
-        shinyalert::shinyalert(title = "Error!", text = "Please specify all required equations prior to loading equations.", type = "error")
-        
-      }
 
-      ############################################
-      # Building error to check equation parsing #
-      ############################################
-      tryCatch({
-        
-        # Changing it to a R code
-        equation.temp <- paste0(latex2r(equation))
-        
-      ###################
-      # Error to return #
-      ###################
-      }, latex2r.error = function(cnd1) {
-        
-        if(error.check.temp == 0){
-          
-          shinyalert::shinyalert(title = "Error!", text = "Please check the specification of your equations, the LaTeX specification may be incorrect. There was an error when translating to R code.", type = "error")
-          
-          equation.temp <- NULL
-          
-        }
-        
-      },
-      
-      ###################
-      # Error to return #
-      ###################
-      error = function(cnd1) {
-        
-        if(error.check.temp == 0){
-          
-          shinyalert::shinyalert(title = "Error!", text = "Please check the specification of your equations, the LaTeX specification may be incorrect. There was an error when translating to R code.", type = "error")
-          
-          equation.temp <- NULL
-          
-        }
-        
-      })
-      
-      # Creating the base for the final equation 
-      equation.final <- equation.temp
-      
-      ##################################################
-      # Replacing the parameters with "paramsi" labels #
-      ##################################################
-      for(b in 1:length(params.temp.list)) {
-        
-        # Requiring the final equation
-        req(equation.final)
-        
-        # Requiring parameters
-        req(params.temp.list)
-        
-        # Sub-setting the parameter 
-        param <- params.temp.list[b]
-        
-        # Replacing the parameter
-        replacement <- paste0("params", b)
-        
-        equation.final <- gsub(param, replacement, equation.final, fixed = TRUE)
-        
-      }
-        
-      ################################################
-      # Replacing the parameters with "varsi" labels #
-      ################################################
-      for (c in 1:length(selectedValues())) {
-        
-        req(equation.final)
-        
-        vars <- selectedValues()[c]
-        
-        replacement <- paste0("vars", c)
-        
-        equation.final <- gsub(vars, replacement, equation.final, fixed = TRUE)
-        
-      }
-      
-      #############################
-      # Adding the starting value #
-      #############################
-      equation.final <- paste0("diff_var", i, " = ", equation.final)
-      
-      return(equation.final)
-        
-    })
+    ####################################################################
+    # Collect the token-built ODE equations. The ODE builder already   #
+    # stores exact varsN / paramsN / time_dependent_paramN tokens, so  #
+    # no latex2r translation or string name replacement is needed here. #
+    ####################################################################
+    ode_built <- ode_builder()
+    if (is.null(ode_built) || !isTRUE(ode_built$valid)) {
+      msg <- paste(ode_built$errors %||% "Please complete all ODE equations.",
+                   collapse = "\n")
+      shinyalert::shinyalert(
+        title = "Error!",
+        text = paste("Please check the token-built ODE equations.", msg, sep = "\n"),
+        type = "error"
+      )
+      odeEquation$system <- NULL
+      odeEquation$rhs <- NULL
+      odeEquation$display <- NULL
+      odeEquation$ic_rhs <- NULL
+      return(NULL)
+    }
 
-    ###############################################
-    # Combine into a single string with new lines #
-    ###############################################
-    ode_system <- paste0("'\n",paste((equations), collapse = "\n"), "'")
-
-    # Saving the system of ODE to the reactive value
-    odeEquation$system <- ode_system
+    # Saving the system of ODE to the reactive values. `system` is the exact
+    # options-file string. `ic_rhs` expands paramsN back to internal parameter
+    # names for the existing initial-condition checker.
+    odeEquation$system <- ode_built$ode_system
+    odeEquation$rhs <- ode_built$rhs
+    odeEquation$display <- ode_built$display
+    odeEquation$ic_rhs <- ode_builder_expand_rhs_for_ic(
+      ode_built$rhs,
+      paramsFinal$params,
+      tryCatch(tdp()$specs, error = function(e) list())
+    )
 
   })
   
@@ -3585,6 +3580,7 @@ server <- function(input, output, session) {
     
     # Requiring the system of equations
     req(odeEquation$system)
+    req(odeEquation$ic_rhs)
     
     # Requiring the list fixed status
     req(parameters.fixed.list$list)
@@ -3592,20 +3588,13 @@ server <- function(input, output, session) {
     # Requiring the initial list 
     req(parameters.inital.list$list)
     
-    ################################################
-    # Preparing the list of equations for function #
-    ################################################
-    equations <- sapply(1:input$vars, function(i) {
-      
-      # Adding each equation 
-      equation <- as.character(input[[paste0("math_", i)]])
-      
-      equation.temp <- NULL
-      
-      # Changing it to a R code
-      equation.temp <- paste0(latex2r(equation))
-      
-    })
+    ###############################################################
+    # Preparing the list of equations for function                #
+    ###############################################################
+    # These are parser-free ODE RHS strings from the token builder.
+    # They use internal parameter names (e.g. beta0, gamma, tint) so the
+    # existing check.IC() logic can keep doing parameter-presence checks.
+    equations <- odeEquation$ic_rhs
     
     ########################
     # Calling the function #
@@ -3987,6 +3976,12 @@ server <- function(input, output, session) {
     ############################################
     # Formatting the parameter variables entry #
     ############################################
+    # Use the INTERNAL identifiers (paramsFinal$params), which are the
+    # to_internal_name() outputs — valid Stan identifiers derived from the
+    # display/LaTeX names (e.g. "\\beta_0" -> "beta0", "t_{int}" -> "tint").
+    # The ODE is stored with positional paramsN placeholders and priors/bounds/
+    # paramsfix are positional, so this keeps every index aligned and yields
+    # e.g. params <- c("beta0", "beta1", "q", "gamma", "N", "tint").
     params_values <- paste0('"', paramsFinal$params, '"', collapse = ", ")
     
     ##############################################
@@ -4197,6 +4192,32 @@ server <- function(input, output, session) {
     #############################
     # Creating the options file #
     #############################
+    # Time-dependent parameter templates: serialized as a paramsN-placeholder
+    # `time_dependent_templates <- list(...)` block. Stan generation for these is
+    # delegated to the main updated stancreator.R (see generate_stan_delegate.R).
+    time_dependent_code <- tryCatch(tdp()$code,
+                                    error = function(e) "time_dependent_templates <- list()")
+    time_dependent_display_code <- tryCatch({
+      tdp_value <- tdp()
+      specs <- tdp_value$specs %||% list()
+      complete_names <- as.character(tdp_value$names %||% character(0))
+      complete_specs <- Filter(function(spec) {
+        !is.null(spec$internal_name) && spec$internal_name %in% complete_names
+      }, specs)
+      if (length(complete_specs) == 0) {
+        "time_dependent_display_names <- character(0)"
+      } else {
+        entries <- vapply(complete_specs, function(spec) {
+          label <- spec$display_name %||% spec$internal_name
+          label <- gsub("\\", "\\\\", label, fixed = TRUE)
+          label <- gsub("\"", "\\\"", label, fixed = TRUE)
+          sprintf('  %s = "%s"', spec$internal_name, label)
+        }, character(1))
+        paste0("time_dependent_display_names <- c(\n",
+               paste(entries, collapse = ",\n"), "\n)")
+      }
+    }, error = function(e) "time_dependent_display_names <- character(0)")
+
     options_content <- sprintf('
     
       calibrationperiods <- c(%s)
@@ -4208,7 +4229,13 @@ server <- function(input, output, session) {
       vars <- c(%s)
       
       params <- c(%s)
-      
+
+      # Time-dependent parameter templates
+      %s
+
+      # User-facing labels for time-dependent parameters
+      %s
+
       ode_system <- %s
       
       paramsfix <- c(%s)
@@ -4251,6 +4278,8 @@ server <- function(input, output, session) {
                                input$forecastinghorizon,
                                vars_values,
                                params_values,
+                               time_dependent_code,
+                               time_dependent_display_code,
                                paste(odeEquation$system, collapse = "\n"),
                                paramsFixed_values, 
                                result, 
@@ -4359,9 +4388,11 @@ server <- function(input, output, session) {
     # Creating the STAN file #
     ##########################
     
-    # Generating the STAN code 
-    stan_code <- generate_stan_file(optionsFile = options_file)
-    
+    # Generating the STAN code (delegated to the main updated stancreator.R,
+    # which supports time_dependent_templates).
+    stan_code <- generate_stan_file_delegated(optionsFile = options_file,
+                                              stan_file = file.path(tempdir(), "ode_model.stan"))
+
     ###############################################################
     # Creating the download back-end to save the `options.R` file #
     ###############################################################
@@ -4420,8 +4451,6 @@ server <- function(input, output, session) {
     # Trying to fit the model #
     ###########################
     tryCatch({
-        
-     isolate({shinyalert::shinyalert("", text = paste0("The model fitting process has begun...."))})
         
      # Fitting the model 
      isolate({runMCMCResults <- run_MCMC(outputFile = optionsFileReactive$file,
@@ -4499,15 +4528,14 @@ server <- function(input, output, session) {
       # Indexed calibration period 
       index.cali <- input$calibrationperiods[i]
       
-      # Start alert 
-      shinyalert::shinyalert("", text = paste0("Sampling for the ",i, " (", index.cali, " time points) calibration period has begun."))
-      
       ###############################
       # Set up for storing messages #
       ###############################
       
       # Storing messages 
       messages_and_errors <- NULL
+      stan_warnings <- character(0)
+      stan_error_message <- NULL
       
       # Storing the results 
       result <- NULL
@@ -4539,8 +4567,17 @@ server <- function(input, output, session) {
           #################################
           }, warning = function(w) {
             
-            # Message to print 
-            shinyalert(paste0("Stan Warning for the ", i, " calibration period (", index.cali, " time points):", w$message), type = "warning")
+            # Non-blocking Stan diagnostics (treedepth, divergences, ESS/Rhat,
+            # BFMI, etc.) are useful in logs but too noisy as modal popups.
+            stan_warning <- paste0(
+              "Stan Warning for the ", i, " calibration period (",
+              index.cali, " time points): ", conditionMessage(w)
+            )
+            stan_warnings <<- c(stan_warnings, stan_warning)
+            message(stan_warning)
+            
+            restart <- findRestart("muffleWarning")
+            if (!is.null(restart)) invokeRestart(restart)
             
           })
           
@@ -4550,7 +4587,11 @@ server <- function(input, output, session) {
           }, error = function(e) {
             
             # Message to occur 
-            message(paste("Stan Error for the ", i, " calibration period (", index.cali, " time points):", e$message))
+            stan_error_message <<- paste0(
+              "Stan Error for the ", i, " calibration period (",
+              index.cali, " time points): ", conditionMessage(e)
+            )
+            message(stan_error_message)
             
             # Restarting the sampling 
             samplingIndicator(0)
@@ -4571,6 +4612,9 @@ server <- function(input, output, session) {
       
       # Combine all known error indicators
       error_lines <- messages_and_errors[grepl("Exception|[Ee]rror", messages_and_errors)]
+      if (!is.null(stan_error_message) && nzchar(stan_error_message)) {
+        error_lines <- c(error_lines, stan_error_message)
+      }
       
       # Sharing the error 
       if (length(error_lines) > 0) {
@@ -4659,7 +4703,7 @@ server <- function(input, output, session) {
       finalMCMC$results <- final.output.MCMC
         
       # End alert
-      shinyalert::shinyalert("", text = paste0("The model fitting process has finished."))
+      shinyalert::shinyalert("", text = "Run completed successfully.", type = "success")
       
       ###########################
       # Runs if an error occurs #
@@ -4836,23 +4880,15 @@ server <- function(input, output, session) {
     # Requiring the output
     req(allOutput$everything)
 
-    ###########################################################################
-    # Showing the `Composite Histogram` if composite information is available #
-    ###########################################################################
-    if(length(allOutput$everything[[1]][[2]]) > 0){
-
-      # Creating the picker input
-      return(pickerInput("selectFigure", "Select a Figure", choices = c("Parameter Histograms", "Composite Histograms", "Trace Plot", "Posterior Plots", "Forecasts")))
-
-    #########################################
-    # Not showing the `Composite Histogram` #
-    #########################################
-    }else{
-
-      # Creating the picker input
-      return(pickerInput("selectFigure", "Select a Figure", choices = c("Parameter Histograms", "Trace Plot", "Posterior Plots", "Forecasts")))
-
+    choices <- c("Parameter Histograms", "Trace Plot", "Posterior Plots", "Forecasts")
+    if(length(allOutput$everything[[1]][["plot.list.composite"]]) > 0){
+      choices <- append(choices, "Composite Histograms", after = 1)
     }
+    if(length(allOutput$everything[[1]][["plot.list.time.dependent"]]) > 0){
+      choices <- c(choices, "Time-Dependent Functions")
+    }
+
+    pickerInput("selectFigure", "Select a Figure", choices = choices)
 
   })
 
@@ -4879,7 +4915,7 @@ server <- function(input, output, session) {
     #####################
     # Showing the arrow #
     #####################
-    if(input$selectFigure == "Parameter Histograms" || input$selectFigure == "Composite Histograms"){
+    if(input$selectFigure %in% c("Parameter Histograms", "Composite Histograms", "Time-Dependent Functions")){
 
       return(actionButton(inputId = "PreviousFigure", label = icon("arrow-left")))
 
@@ -4908,7 +4944,7 @@ server <- function(input, output, session) {
     #####################
     # Showing the arrow #
     #####################
-    if(input$selectFigure == "Parameter Histograms" || input$selectFigure == "Composite Histograms"){
+    if(input$selectFigure %in% c("Parameter Histograms", "Composite Histograms", "Time-Dependent Functions")){
 
       return(actionButton(inputId = "NextFigure", label = icon("arrow-right")))
 
@@ -4960,7 +4996,8 @@ server <- function(input, output, session) {
                               "Forecasts" = "forecasts.fits.plot",
                               "Composite Histograms" = "plot.list.composite",
                               "Trace Plot" = "plot.list.trace",
-                              "Posterior Plots" = "plot.list.posterior"
+                              "Posterior Plots" = "plot.list.posterior",
+                              "Time-Dependent Functions" = "plot.list.time.dependent"
 
     )
 
@@ -5074,7 +5111,7 @@ server <- function(input, output, session) {
     #######################
     # Creating the output #
     #######################
-    if(input$selectFigure == "Parameter Histograms" || input$selectFigure == "Composite Histograms"){
+    if(input$selectFigure %in% c("Parameter Histograms", "Composite Histograms", "Time-Dependent Functions")){
 
       return(filtered.plots$plot[[figure_index_arrow()]])
 
@@ -5113,7 +5150,7 @@ server <- function(input, output, session) {
     # List of figure names
     plotsList <- c("plot.list.params", "forecasts.fits.plot",
                    "plot.list.composite", "plot.list.trace",
-                   "plot.list.posterior")
+                   "plot.list.posterior", "plot.list.time.dependent")
 
     #######################################
     # Looping through calibration periods #
@@ -5148,13 +5185,14 @@ server <- function(input, output, session) {
                                    "forecasts.fits.plot" = "forecast-figures-",
                                    "plot.list.composite" = "composite-plots-",
                                    "plot.list.trace" = "trace-plots-",
-                                   "plot.list.posterior" = "posterior-plots-"
+                                   "plot.list.posterior" = "posterior-plots-",
+                                   "plot.list.time.dependent" = "time-dependent-function-"
         )
 
         ###############################################
         # Determining if an additional loop is needed #
         ###############################################
-        if(plot.name.temp %in% c("plot.list.params", "plot.list.composite")){
+        if(plot.name.temp %in% c("plot.list.params", "plot.list.composite", "plot.list.time.dependent")){
 
           # Creating the needed loop
           for(a in 1:length(allOutput$everything[[i]][[plot.name.temp]])){
@@ -5462,7 +5500,12 @@ server <- function(input, output, session) {
     ##############################
     # Creating the `pickerInput` #
     ##############################
-    pickerInput("selectData", "Select a Data Set", choices = c("Forecasts", "Parameters", "Performance Metrics"))
+    choices <- c("Forecasts", "Parameters", "Performance Metrics")
+    if(!is.null(allOutput$everything[[1]][["time.dependent.values"]]) &&
+       nrow(as.data.frame(allOutput$everything[[1]][["time.dependent.values"]])) > 0){
+      choices <- c(choices, "Time-Dependent Functions")
+    }
+    pickerInput("selectData", "Select a Data Set", choices = choices)
 
   })
 
@@ -5495,11 +5538,15 @@ server <- function(input, output, session) {
     
     # Parameters to save
     parameters.save <- c()
+
+    # Time-dependent function summaries to save
+    time.dependent.save <- c()
     
     # List of figure names 
     plotsList <- c("plot.list.params", "forecasts.fits.plot",
                    "plot.list.composite", "plot.list.trace",
-                   "plot.list.posterior", "parameter.values")
+                   "plot.list.posterior", "plot.list.time.dependent",
+                   "parameter.values")
     
     ########################
     # Looping through list #
@@ -5549,6 +5596,17 @@ server <- function(input, output, session) {
             
           # Adding it to the list 
           parameters.save <- rbind(parameters.temp, parameters.save)
+
+        #######################################
+        # Time-dependent function curve data #
+        #######################################
+        }else if(data.name.temp == "time.dependent.values"){
+
+          # Reading in the data
+          time.dependent.temp <- calibration.filtered[[p]]
+
+          # Adding it to the list
+          time.dependent.save <- rbind(time.dependent.temp, time.dependent.save)
             
           #################
           # Forecast fits #
@@ -5579,6 +5637,12 @@ server <- function(input, output, session) {
       
     # Adding the name
     data.to.save[["parameters"]] <- parameters.save
+
+    #############################################################
+    # Adding the time-dependent function data set to the list   #
+    #############################################################
+
+    data.to.save[["time-dependent-functions"]] <- time.dependent.save
       
     #######################################################
     # Adding the performance metrics data set to the list #
@@ -5640,7 +5704,8 @@ server <- function(input, output, session) {
                               
                               "Forecasts" = "FORECASTFILLER",
                               "Parameters" = "parameters",
-                              "Performance Metrics" = "performance-metrics"
+                              "Performance Metrics" = "performance-metrics",
+                              "Time-Dependent Functions" = "time-dependent-functions"
                               
     )
 

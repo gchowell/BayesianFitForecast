@@ -109,7 +109,7 @@ check_within_interval <- function(actual, interval) {
 
 
 
-# Calculate Coverage of 95% CI for the Calibration Part
+# Calculate coverage of the 95% prediction interval for the calibration part
 calculate_percent_within_interval_calibration <- function(actual_calibration, mcmc_intervals_aggr) {
   # Initialize a vector to store the results
   within_interval <- logical(length(actual_calibration))
@@ -132,7 +132,7 @@ calculate_percent_within_interval_calibration <- function(actual_calibration, mc
 }
 
 
-# Calculate Coverage of 95% CI for the Forecasting Part
+# Calculate coverage of the 95% prediction interval for the forecasting part
 calculate_percent_within_interval_forecast <- function(actual_forecast, mcmc_intervals_aggr, calibrationperiod) {
   
   # Initialize a vector to store the results

@@ -14,9 +14,11 @@ run_MCMC2 <- function(outputFile, data.temp, finalModlLIST){
   # Creating the temp file path for the stan file #
   #################################################
   stan_file <- file.path(tempdir(), "ode_model.stan")
-  
-  # Generating the STAN code 
-  stan_code <- generate_stan_file(optionsFile = options_file)
+
+  # Generating the STAN code (delegated to the main updated stancreator.R,
+  # which supports time_dependent_templates).
+  stan_code <- generate_stan_file_delegated(optionsFile = options_file,
+                                            stan_file = stan_file)
   
   # Saving the Stan file to the temp directory 
   writeLines(stan_code, stan_file)
@@ -113,8 +115,10 @@ run_MCMC2 <- function(outputFile, data.temp, finalModlLIST){
       param_samples[[paste0("phi", i, "_samples")]] <- s[[paste0("phi", i)]]
     }
   } else if (errstrc == 2) {
-    assign(paste0("sigma", i, "_samples"), s[[paste0("sigma", i)]])
-    param_samples[[paste0("sigma", i, "_samples")]] <- s[[paste0("sigma", i)]]
+    for (i in 1:length(fitting_index)) {
+      assign(paste0("sigma", i, "_samples"), s[[paste0("sigma", i)]])
+      param_samples[[paste0("sigma", i, "_samples")]] <- s[[paste0("sigma", i)]]
+    }
   }
   composite_samples <- list()
   for (name in names(composite_expressions)) {

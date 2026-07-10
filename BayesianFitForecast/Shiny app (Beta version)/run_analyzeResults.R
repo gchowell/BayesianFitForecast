@@ -21,6 +21,162 @@
   #######################
   source("Metric functions.R")
 
+#------------------------------------------------------------------------------#
+# Time-dependent posterior curve helpers --------------------------------------
+#------------------------------------------------------------------------------#
+# These helpers are intentionally R-side only. They evaluate the already-written
+# `time_dependent_templates` strings against posterior scalar-parameter samples
+# and fixed parameter values from the options file.
+
+tdp_analysis_draw_count <- function(param_samples, params, paramsfix) {
+  if (is.null(params) || length(params) == 0) return(0)
+  estimated <- params[as.numeric(paramsfix) == 0]
+  lengths <- vapply(estimated, function(param) {
+    sample <- param_samples[[param]]
+    if (is.null(sample)) 0L else length(sample)
+  }, integer(1))
+  positive <- lengths[lengths > 0]
+  if (length(positive) == 0) return(1L)
+  min(positive)
+}
+
+tdp_analysis_fixed_value <- function(index, option_env) {
+  prior_name <- paste0("params", index, "_prior")
+  if (!exists(prior_name, envir = option_env, inherits = TRUE)) {
+    stop("Missing fixed value for ", prior_name)
+  }
+  value <- get(prior_name, envir = option_env, inherits = TRUE)
+  value <- suppressWarnings(as.numeric(value))
+  if (length(value) == 0 || is.na(value[[1]])) {
+    stop("Fixed value for ", prior_name, " is not numeric.")
+  }
+  value[[1]]
+}
+
+tdp_analysis_param_matrix <- function(param_samples, params, paramsfix,
+                                      n_draws, option_env) {
+  mat <- matrix(NA_real_, nrow = n_draws, ncol = length(params))
+  colnames(mat) <- paste0("params", seq_along(params))
+
+  for (idx in seq_along(params)) {
+    if (as.numeric(paramsfix[[idx]]) == 1) {
+      mat[, idx] <- tdp_analysis_fixed_value(idx, option_env)
+    } else {
+      samples <- suppressWarnings(as.numeric(param_samples[[params[[idx]]]]))
+      if (length(samples) == 0 || all(is.na(samples))) {
+        stop("Missing posterior samples for estimated parameter ", params[[idx]])
+      }
+      mat[, idx] <- samples[seq_len(n_draws)]
+    }
+  }
+  mat
+}
+
+tdp_analysis_eval_template <- function(template, time_value, param_values) {
+  template <- gsub("pi\\s*\\(\\s*\\)", "pi", template, perl = TRUE)
+  env <- new.env(parent = baseenv())
+  env$t <- time_value
+  env$time <- time_value
+  env$pow <- function(x, y) x^y
+  for (idx in seq_along(param_values)) {
+    assign(paste0("params", idx), param_values[[idx]], envir = env)
+  }
+  fn <- eval(parse(text = paste0("function() {\n", template, "\n}")), envir = env)
+  as.numeric(fn())[[1]]
+}
+
+tdp_analysis_display_name <- function(template_name, display_names = NULL) {
+  if (!is.null(display_names) && template_name %in% names(display_names)) {
+    return(unname(display_names[[template_name]]))
+  }
+  template_name
+}
+
+# Convert a possibly-LaTeX display label (e.g. "\\beta(t)", "\\theta_1(t)") into
+# a clean plain-text label for plot titles / axes (e.g. "beta(t)", "theta_1(t)").
+tdp_analysis_plain_label <- function(label) {
+  label <- trimws(as.character(label)[[1]])
+  if (length(label) == 0 || is.na(label) || !nzchar(label)) return("f(t)")
+  label <- gsub("\\\\", "", label)   # drop LaTeX backslashes: \beta -> beta
+  label <- gsub("[{}$]", "", label)  # drop braces / math delimiters
+  label <- trimws(label)
+  if (!nzchar(label)) "f(t)" else label
+}
+
+tdp_analysis_outputs <- function(param_samples, params, paramsfix,
+                                 time_dependent_templates, t_range,
+                                 calibrationperiod, option_env,
+                                 display_names = NULL,
+                                 date_label = "time") {
+  empty <- list(plots = list(), tables = data.frame())
+  if (is.null(time_dependent_templates) || length(time_dependent_templates) == 0) {
+    return(empty)
+  }
+
+  n_draws <- tdp_analysis_draw_count(param_samples, params, paramsfix)
+  if (is.null(n_draws) || n_draws < 1) return(empty)
+
+  param_matrix <- tdp_analysis_param_matrix(
+    param_samples = param_samples,
+    params = params,
+    paramsfix = paramsfix,
+    n_draws = n_draws,
+    option_env = option_env
+  )
+
+  plots <- list()
+  tables <- list()
+
+  for (template_name in names(time_dependent_templates)) {
+    template <- time_dependent_templates[[template_name]]
+    values <- matrix(NA_real_, nrow = n_draws, ncol = length(t_range))
+
+    for (draw_idx in seq_len(n_draws)) {
+      for (time_idx in seq_along(t_range)) {
+        values[draw_idx, time_idx] <- tdp_analysis_eval_template(
+          template = template,
+          time_value = t_range[[time_idx]],
+          param_values = param_matrix[draw_idx, ]
+        )
+      }
+    }
+
+    # Summarize the posterior curves at each time point with a single median and
+    # a single 95% percentile interval (2.5% / 97.5%). No 50% band -- the figure
+    # mirrors the clean median + 95% interval style of the forecast plots.
+    summary_df <- data.frame(
+      CalibrationLength = calibrationperiod,
+      TimeDependentParameter = template_name,
+      DisplayName = tdp_analysis_display_name(template_name, display_names),
+      time = t_range,
+      median = apply(values, 2, median, na.rm = TRUE),
+      lower_95 = apply(values, 2, quantile, probs = 0.025, na.rm = TRUE),
+      upper_95 = apply(values, 2, quantile, probs = 0.975, na.rm = TRUE),
+      check.names = FALSE
+    )
+
+    display_name <- tdp_analysis_plain_label(unique(summary_df$DisplayName)[[1]])
+    plot_df <- summary_df
+    p <- ggplot(plot_df, aes(x = time)) +
+      geom_ribbon(aes(ymin = lower_95, ymax = upper_95), fill = "#5bc0de", alpha = 0.20) +
+      geom_line(aes(y = median), color = "#337ab7", linewidth = 1) +
+      labs(
+        title = paste("Time-dependent parameter:", display_name),
+        x = date_label,
+        y = display_name
+      ) +
+      theme_classic()
+
+    plots[[template_name]] <- p
+    tables[[template_name]] <- summary_df
+  }
+
+  list(
+    plots = plots,
+    tables = do.call(rbind, tables)
+  )
+}
+
 
 #------------------------------------------------------------------------------#
 # Function: Obtaining Output for Bayesian Models -------------------------------
@@ -231,8 +387,9 @@ run_analyzeResults <- function(optionsFile, MCMCOutput, data.temp){
       # Plotting the histogram #
       ##########################
       hist(current_samples,
-           main = paste("Median:", medians[i], "Mean:", means[i], "95% CI:",
-                        lower_bounds[i], ", ", upper_bounds[i]),
+           main = sprintf("Median: %.2f, Mean: %.2f, 95%% CrI: %s",
+                          medians[i], means[i],
+                          sprintf("(%.2f, %.2f)", lower_bounds[i], upper_bounds[i])),
            xlab = pars[i],
            ylab = "Frequency",
            col = "lightblue",
@@ -340,8 +497,9 @@ run_analyzeResults <- function(optionsFile, MCMCOutput, data.temp){
       # Plotting the histogram #
       ##########################
       hist(current_samples, 
-           main = paste(name, "- Median:", composite_medians, "Mean:", composite_means, "95% CI:",
-                        composite_lower_bounds, ", ", composite_upper_bounds), 
+           main = sprintf("%s - Median: %.2f, Mean: %.2f, 95%% CrI: %s",
+                          name, composite_medians, composite_means,
+                          sprintf("(%.2f, %.2f)", composite_lower_bounds, composite_upper_bounds)), 
            xlab = name, 
            ylab = "Frequency", 
            col = "lightblue", 
@@ -476,7 +634,7 @@ run_analyzeResults <- function(optionsFile, MCMCOutput, data.temp){
       }
       
       ###################################################
-      # Calculating the MAE, MSE. WIS, and 95% coverage #
+      # Calculating the MAE, MSE, WIS, and 95% PI coverage #
       ###################################################
       
       # Calculating the MAE 
@@ -488,7 +646,7 @@ run_analyzeResults <- function(optionsFile, MCMCOutput, data.temp){
       # Calculating the WIS 
       assign(paste0("wis", i, "_calibration"), calculate_WIS(get(paste0("mysolutionaggr", i, "_calibration")), get(paste0("actual", i, "_calibration"))))
       
-      # Calculating the 95% PI 
+      # Calculating coverage of the 95% prediction interval
       assign(paste0("coverage", i, "_calibration"), calculate_percent_within_interval_calibration(get(paste0("actual", i, "_calibration")), get(paste0("mcmc_intervals_aggr", i))))
       
       #####################################################################
@@ -515,7 +673,7 @@ run_analyzeResults <- function(optionsFile, MCMCOutput, data.temp){
         # Calculating the WIS 
         assign(paste0("wis", i, "_forecast"), calculate_WIS(get(paste0("mysolutionaggr", i, "_forecast")), get(paste0("actual", i, "_forecast"))))
         
-        # Calculating the 95% PI 
+        # Calculating coverage of the 95% prediction interval
         assign(paste0("coverage", i, "_forecast"), calculate_percent_within_interval_forecast(get(paste0("actual", i, "_forecast")), get(paste0("mcmc_intervals_aggr", i)), calibrationperiod))
       
       ##########################################################################
@@ -532,7 +690,7 @@ run_analyzeResults <- function(optionsFile, MCMCOutput, data.temp){
         # Set WIS variable to NA
         assign(paste0("wis", i, "_forecast"),NA)
         
-        # Set 95% PI variable to NA
+        # Set 95% PI coverage variable to NA
         assign(paste0("coverage", i, "_forecast"),NA)
         
       }
@@ -564,7 +722,7 @@ run_analyzeResults <- function(optionsFile, MCMCOutput, data.temp){
       # Create the data frame for the current index
       data <- data.frame(
         
-        Metrics = c(rep(c("MAE", "MSE", "WIS", "Coverage"))), 
+        Metrics = c(rep(c("MAE", "MSE", "WIS", "Coverage of 95% PI"))), 
         Calibration = c(get(paste0("mae", i, "_calibration")), 
                         get(paste0("mse", i, "_calibration")), 
                         get(paste0("wis", i, "_calibration")), 
@@ -706,10 +864,10 @@ run_analyzeResults <- function(optionsFile, MCMCOutput, data.temp){
       # Calculate mean
       mean_value <- round(mean(current_samples), digits = 2)
       
-      # Extract lower bounds of the CI
+      # Extract lower bounds of the 95% credible interval
       lower_bound <- round(mcmc_interval[1], digits = 2)
       
-      # Extract upper bounds of the CI
+      # Extract upper bounds of the 95% credible interval
       upper_bound <- round(mcmc_interval[2], digits = 2)
       
       ##################################################
@@ -720,8 +878,9 @@ run_analyzeResults <- function(optionsFile, MCMCOutput, data.temp){
         parameter = pars[i],  # Assuming pars contains parameter names
         median = median_value,
         mean = mean_value,
-        lower_bound = lower_bound,
-        upper_bound = upper_bound
+        `95% CrI lower` = lower_bound,
+        `95% CrI upper` = upper_bound,
+        check.names = FALSE
       )
       
       
@@ -758,8 +917,8 @@ run_analyzeResults <- function(optionsFile, MCMCOutput, data.temp){
       n_eff_value <- round(summary(fit_ode_model)$summary[param, "n_eff"], 2)
       Rhat_value <- round(summary(fit_ode_model)$summary[param, "Rhat"], 2)
       
-      # Construct CI_95 string for the current parameter
-      CI_95 <- paste("(", round(mcmc_interval[1], 2), ",", round(mcmc_interval[2], 2), ")")
+      # Construct 95% credible interval string for the current parameter
+      credible_interval_95 <- sprintf("(%.2f, %.2f)", mcmc_interval[1], mcmc_interval[2])
       
       # Create a data frame for the current parameter
       parameter_data <- data.frame(
@@ -767,16 +926,53 @@ run_analyzeResults <- function(optionsFile, MCMCOutput, data.temp){
         Parameter = param,
         Mean = mean_value,
         Median = median_value,
-        LB = round(mcmc_interval[1], 2),
-        UB = round(mcmc_interval[2], 2), 
+        `95% CrI` = credible_interval_95,
         N_eff = n_eff_value,
         Rhat = Rhat_value,
+        check.names = FALSE,
         row.names = NULL
       )
       
       # Append parameter_data to result_data2
       result_data2 <- rbind(result_data2, parameter_data)
       
+    }
+
+#------------------------------------------------------------------------------#
+# Time-dependent parameter posterior curves ------------------------------------
+#------------------------------------------------------------------------------#
+# About: If the options file contains time_dependent_templates, evaluate each  #
+# template across posterior draws and the model time grid. This produces one   #
+# plot per time-dependent parameter and one exportable summary table.          #
+#------------------------------------------------------------------------------#
+
+    tdp.result <- list(plots = list(), tables = data.frame())
+    if (exists("time_dependent_templates") &&
+        !is.null(time_dependent_templates) &&
+        length(time_dependent_templates) > 0) {
+      tdp.result <- tryCatch(
+        {
+          tdp_analysis_outputs(
+            param_samples = param_samples,
+            params = params,
+            paramsfix = paramsfix,
+            time_dependent_templates = time_dependent_templates,
+            t_range = 0:(calibrationperiod + forecastinghorizon - 1),
+            calibrationperiod = calibrationperiod,
+            option_env = environment(),
+            display_names = if (exists("time_dependent_display_names")) {
+              time_dependent_display_names
+            } else {
+              NULL
+            },
+            date_label = datetype
+          )
+        },
+        error = function(e) {
+          message("Time-dependent posterior curves skipped: ", conditionMessage(e))
+          list(plots = list(), tables = data.frame())
+        }
+      )
     }
   
 #------------------------------------------------------------------------------#
@@ -797,6 +993,8 @@ run_analyzeResults <- function(optionsFile, MCMCOutput, data.temp){
                              get(paste0("performance.metrics.", calibrationperiod)),
                              get(paste0("forecasts.fits.", calibrationperiod)),
                              get(paste0("forecasts.fits.plot", calibrationperiod)),
+                             tdp.result$plots,
+                             tdp.result$tables,
                              result_data1,
                              result_data2)
     
@@ -808,6 +1006,8 @@ run_analyzeResults <- function(optionsFile, MCMCOutput, data.temp){
                                  paste0("performance.metrics"),
                                  paste0("forecasts.fits"),
                                  paste0("forecasts.fits.plot"),
+                                 paste0("plot.list.time.dependent"),
+                                 paste0("time.dependent.values"),
                                  paste0("parameter.values"),
                                  paste0("add.parameter.values"))
     
