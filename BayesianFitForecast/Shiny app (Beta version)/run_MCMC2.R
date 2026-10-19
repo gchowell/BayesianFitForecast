@@ -1,141 +1,118 @@
-run_MCMC2 <- function(outputFile, data.temp, finalModlLIST){
-  
-  ###################################################
-  # Calling the options file created in the UI code #
-  ###################################################
-  source(outputFile)
-  
-  # Renaming the options file
-  options_file <- outputFile
-  
-  listMOD <- finalModlLIST
-  
-  #################################################
-  # Creating the temp file path for the stan file #
-  #################################################
-  stan_file <- file.path(tempdir(), "ode_model.stan")
+#------------------------------------------------------------------------------#
+# run_MCMC2.R — Extract posterior draws from the fitted Stan models -------------
+#------------------------------------------------------------------------------#
+# About: `run_MCMC2()` receives the list of fitted `stanfit` objects produced in #
+# app.R (ONE fit PER calibration period) and returns a list with ONE element    #
+# PER calibration period. Each element contains the posterior draws of the     #
+# estimated parameters, the predicted trajectories, the fitted object, and the #
+# composite-expression draws. `run_analyzeResults()` consumes this list.       #
+#                                                                              #
+# Fix (2026-10): the previous version overwrote its result inside the loop and #
+# returned only the LAST calibration period, so every other calibration period #
+# displayed mislabeled results. Results are now kept for every period.         #
+#------------------------------------------------------------------------------#
 
-  # Generating the STAN code (delegated to the main updated stancreator.R,
-  # which supports time_dependent_templates).
-  stan_code <- generate_stan_file_delegated(optionsFile = options_file,
-                                            stan_file = stan_file)
-  
-  # Saving the Stan file to the temp directory 
-  writeLines(stan_code, stan_file)
-  
-  #############################
-  # Reading in the excel file #
-  #############################
-  Mydata <- data.temp
-  
-  for (i in 1:length(fitting_index)) {
-    assign(paste0("actualcases", i), Mydata[[paste0("cases", i)]])
+#------------------------------------------------------------------------------#
+# Helper: source an options file into its own environment ----------------------
+#------------------------------------------------------------------------------#
+# About: The option variables are kept out of the global environment so that   #
+# several Shiny sessions never overwrite each other's settings.                #
+#------------------------------------------------------------------------------#
+bff_load_options <- function(optionsFile) {
+  opt <- new.env(parent = globalenv())
+  sys.source(normalizePath(optionsFile, winslash = "/", mustWork = TRUE), envir = opt)
+  if (!exists("time_dependent_templates", envir = opt, inherits = FALSE)) {
+    assign("time_dependent_templates", list(), envir = opt)
   }
-  
-  #######################################
-  # Looping through calibration periods #
-  #######################################
-  for(h in seq_along(calibrationperiods)){
-    
-    # Indexed calibration period
-    calibrationperiod <- calibrationperiods[h]
-    
-    for (i in 1:length(fitting_index)) {
-      assign(paste0("cases", i), as.integer(get(paste0("actualcases", i))[1:calibrationperiod]))
-    }
-    
-    n_days <- length(get(paste0("cases", 1)))
-    nfst_days <- forecastinghorizon
-    t <- seq(1, n_days+nfst_days, by = 1)
-    t0 = 0 
-    y0 = Ic
-    if(length(Ic) == 1) {
-      y0 <- array(Ic[1], dim = 1)
-    }
-    
-    
-    for (i in 1:length(fitting_index)) {
-      assign(paste0("cases_all", i), c(get(paste0("cases", i)), rep(NA, nfst_days)))
-    }
-    if(vars.init == 1)
-    {
-      data_ode <- list(n_days = n_days, nfst_days=nfst_days, y0 = y0, t0 = t0, ts = t)
-      for (i in 1:length(fitting_index)) {
-        data_ode[[paste0("cases", i)]] <- get(paste0("cases", i))
-      }
-    }
-    if(vars.init == 0)
-    {
-      data_ode <- list(n_days = n_days, nfst_days=nfst_days, t0 = t0, ts = t)
-      for (i in 1:length(fitting_index)) {
-        data_ode[[paste0("cases", i)]] <- get(paste0("cases", i))
-      }
-    }
-    for (i in seq_along(params)) {
-      prior_name <- paste0("params", i, "_prior")
-      prior_value <- get(prior_name)
-      
-      if (is.numeric(prior_value)) {
-        data_ode[[params[i]]] <- prior_value  # Add parameter with its prior to ode_data
-      }
-    }
-    
-    
-   # Indexed model fit
-   fit_ode_model <- listMOD[[h]]
-
-  pars <- params[paramsfix == 0]
-  if (errstrc == 1) {
-    for (i in 1:length(fitting_index)) {
-      pars <- c(pars, paste0("phi", i))
-    }
-  } else if (errstrc == 2) {
-    for (i in 1:length(fitting_index)) {
-      pars <- c(pars, paste0("sigma", i))
-    }
+  if (!exists("composite_expressions", envir = opt, inherits = FALSE)) {
+    assign("composite_expressions", list(), envir = opt)
   }
-  s <- rstan::extract(fit_ode_model)
-  param_samples <- list()
-  for (param in pars) {
-    param_samples[[param]] <- s[[param]]
+  if (!exists("model_name", envir = opt, inherits = FALSE)) {
+    assign("model_name", "model", envir = opt)
   }
-  for (i in 1:length(fitting_index)) {
-    assign(paste0("pred_cases", i), s[[paste0("pred_cases", i)]])
-  }
-
-  for (i in 1:length(fitting_index)) {
-    assign(paste0("phi", i, "_samples"), NULL)
-  }
-  for (i in 1:length(fitting_index)) {
-    assign(paste0("sigma", i, "_samples"), NULL)
-  }
-  if (errstrc == 1) {
-    for (i in 1:length(fitting_index)) {
-      assign(paste0("phi", i, "_samples"), s[[paste0("phi", i)]])
-      param_samples[[paste0("phi", i, "_samples")]] <- s[[paste0("phi", i)]]
-    }
-  } else if (errstrc == 2) {
-    for (i in 1:length(fitting_index)) {
-      assign(paste0("sigma", i, "_samples"), s[[paste0("sigma", i)]])
-      param_samples[[paste0("sigma", i, "_samples")]] <- s[[paste0("sigma", i)]]
-    }
-  }
-  composite_samples <- list()
-  for (name in names(composite_expressions)) {
-    composite_samples[[name]] <- s[[name]]
-    }
-  errorstructure <- c("negativebinomial", "normal", "poisson")
-  pred_cases_list <- sapply(1:length(fitting_index), function(i) get(paste0("pred_cases", i)), simplify = FALSE)
-  pred_cases <- abind::abind(pred_cases_list, along = 3)
-  phi_samples <- sapply(1:length(fitting_index), function(i) get(paste0("phi", i, "_samples")))
-  sigma_samples <- sapply(1:length(fitting_index), function(i) get(paste0("sigma", i, "_samples")))
-
-  FINAL <- list(param_samples, pred_cases, fit_ode_model, pars, phi_samples, sigma_samples,
-   composite_expressions, composite_samples)
-
-  names(FINAL) <- c("param_samples", "pred_cases", "fit_ode_model", "pars", "phi_samples", "sigma_samples",
-                    "composite_expressions", "composite_samples")
-
+  opt
 }
-return(FINAL)
+
+#------------------------------------------------------------------------------#
+# Helper: names of the sampled quantities (parameters + error-structure terms) #
+#------------------------------------------------------------------------------#
+bff_sampled_pars <- function(opt) {
+  pars <- opt$params[as.numeric(opt$paramsfix) == 0]
+  n_series <- length(opt$fitting_index)
+  if (opt$errstrc == 1) {
+    pars <- c(pars, paste0("phi", seq_len(n_series)))
+  } else if (opt$errstrc == 2) {
+    pars <- c(pars, paste0("sigma", seq_len(n_series)))
+  }
+  pars
+}
+
+#------------------------------------------------------------------------------#
+# Main function ----------------------------------------------------------------
+#------------------------------------------------------------------------------#
+run_MCMC2 <- function(outputFile, data.temp, finalModlLIST) {
+
+  opt <- bff_load_options(outputFile)
+
+  calibrationperiods <- as.numeric(opt$calibrationperiods)
+  fitting_index      <- opt$fitting_index
+  errstrc            <- opt$errstrc
+  composite_expressions <- opt$composite_expressions
+
+  if (length(finalModlLIST) != length(calibrationperiods)) {
+    stop(sprintf(paste0("Expected %d fitted model(s) (one per calibration period) ",
+                        "but received %d."),
+                 length(calibrationperiods), length(finalModlLIST)))
+  }
+
+  pars <- bff_sampled_pars(opt)
+
+  results <- vector("list", length(calibrationperiods))
+  names(results) <- as.character(calibrationperiods)
+
+  for (h in seq_along(calibrationperiods)) {
+
+    fit_ode_model <- finalModlLIST[[h]]
+    if (is.null(fit_ode_model)) {
+      stop(sprintf("No fitted model available for calibration period %s.",
+                   calibrationperiods[h]))
+    }
+
+    s <- rstan::extract(fit_ode_model)
+
+    # Posterior draws of every sampled quantity
+    param_samples <- lapply(stats::setNames(pars, pars), function(p) s[[p]])
+
+    # Predicted trajectories: iterations x time x series
+    pred_cases_list <- lapply(seq_along(fitting_index), function(i) {
+      s[[paste0("pred_cases", i)]]
+    })
+    pred_cases <- abind::abind(pred_cases_list, along = 3)
+
+    phi_samples <- if (errstrc == 1) {
+      sapply(seq_along(fitting_index), function(i) s[[paste0("phi", i)]])
+    } else NULL
+
+    sigma_samples <- if (errstrc == 2) {
+      sapply(seq_along(fitting_index), function(i) s[[paste0("sigma", i)]])
+    } else NULL
+
+    composite_names <- names(composite_expressions)
+    composite_samples <- lapply(stats::setNames(composite_names, composite_names),
+                                function(nm) s[[nm]])
+
+    results[[h]] <- list(
+      param_samples         = param_samples,
+      pred_cases            = pred_cases,
+      fit_ode_model         = fit_ode_model,
+      pars                  = pars,
+      phi_samples           = phi_samples,
+      sigma_samples         = sigma_samples,
+      composite_expressions = composite_expressions,
+      composite_samples     = composite_samples,
+      calibrationperiod     = calibrationperiods[h]
+    )
+  }
+
+  results
 }

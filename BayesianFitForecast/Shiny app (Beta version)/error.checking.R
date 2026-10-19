@@ -51,13 +51,15 @@ error.checking <- function(original.data){
   # Renaming the first column 
   colnames(temp.data)[1] <- c("A")
   
-  # Pulling the actual sequence of time indexes 
-  actual.seq <- temp.data$A
-  
+  # Pulling the actual sequence of time indexes (integer columns, e.g. from a
+  # CSV file, are compared as numbers: identical() would reject them)
+  actual.seq <- suppressWarnings(as.numeric(temp.data$A))
+
   #####################################
   # Comparing the lists: Error Occurs #
   #####################################
-  if(!identical(ideal.seq, actual.seq)){
+  if(length(actual.seq) != length(ideal.seq) || any(is.na(actual.seq)) ||
+     !isTRUE(all.equal(ideal.seq, actual.seq, check.attributes = FALSE))){
     
     # Returning an error 
     return("ERROR1")

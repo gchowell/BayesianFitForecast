@@ -1,25 +1,38 @@
 #------------------------------------------------------------------------------#
-# Needed packages --------------------------------------------------------------
+# run_analyzeResults.R — Build figures, tables and diagnostics from the fits ----
 #------------------------------------------------------------------------------#
-# About: This section calls the needed R-packages and source files to be able  #
-# to run the code included below.                                              #
+# About: `run_analyzeResults()` receives the list returned by `run_MCMC2()`     #
+# (ONE element PER calibration period) and returns, for every calibration       #
+# period, the figures and tables displayed in the dashboard:                   #
+#   * parameter / composite histograms, trace plots, posterior densities       #
+#   * forecast plot + forecast table FOR EVERY FITTED TIME SERIES              #
+#   * performance metrics (MAE, MSE, WIS, 95% PI coverage) per series          #
+#   * parameter summary (median, mean, 95% CrI, n_eff, Rhat)                  #
+#   * convergence summary (Rhat, ESS, divergences, treedepth, BFMI)            #
+#   * model-fit metrics (DIC, WAIC, LOOIC) per series                          #
+#   * time-dependent parameter curves                                          #
+#   * posterior draws (for download)                                           #
+#                                                                              #
+# Fix (2026-10): the previous version used a single fit for every calibration  #
+# period and overwrote the per-series outputs, so only the last series and the #
+# last calibration period were (correctly) reported.                           #
 #------------------------------------------------------------------------------#
 
   ###################
   # Needed packages #
   ###################
-  library(bayesplot)
-  library("readxl")
-  library(xlsx)
-  library(readxl)
-  library(openxlsx)
   library(rstan)
   library(ggplot2)
-  
-  #######################
-  # Needed Source Files #
-  #######################
+  library(bayesplot)
+
+  ###########################
+  # Needed source functions #
+  ###########################
   source("Metric functions.R")
+  if (!exists("bff_load_options", mode = "function")) source("run_MCMC2.R")
+
+  `%||%` <- function(x, y) if (is.null(x)) y else x
+
 
 #------------------------------------------------------------------------------#
 # Time-dependent posterior curve helpers --------------------------------------
@@ -185,841 +198,506 @@ tdp_analysis_outputs <- function(param_samples, params, paramsfix,
 # materials from the RStan results. This includes both figures and data sets.  #
 # The results are saved in a list, and then exported to the primary dashboard. #
 #------------------------------------------------------------------------------#
-run_analyzeResults <- function(optionsFile, MCMCOutput, data.temp){
-  
 
 #------------------------------------------------------------------------------#
-# Calling, and renaming (when needed) function inputs --------------------------
+# Small formatting / plotting helpers -------------------------------------------
 #------------------------------------------------------------------------------#
-# About: This section calls, unpacks, and renames the function inputs to be    #
-# used throughout the rest of the function. For example, it takes the list of  #
-# outputs received from the `run_MCMC` function, and saves each element as its #
-# own list.                                                                    #
-#------------------------------------------------------------------------------#
-  
-  ##############################################
-  # Calling the options file created in the UI #
-  ##############################################
-  source(optionsFile)
 
-  ##################################
-  # Unpacking the MCMC output list #
-  ##################################
-  
-  # `Param_samples` list
-  param_samples <- MCMCOutput[[1]]
-  
-  # `Pred_Cases` list
-  pred_cases <- MCMCOutput[[2]]
-  
-  # ODE Model fit
-  fit_ode_model <- MCMCOutput[[3]]
-  
-  # `Pars` list
-  pars <- MCMCOutput[[4]]
-  
-  # `Phi_Samples` list
-  phi_samples <- MCMCOutput[[5]]
-  
-  # `Sigma_Samples` list
-  sigma_samples <- MCMCOutput[[6]]
-  
-  # `Composite_Expressions` list
-  composite_expressions <- MCMCOutput[[7]]
-  
-  # `Composite_Samples` list
-  composite_samples <- MCMCOutput[[8]]
-  
-  ########################################################
-  # Creating the list for calibration period information #
-  ########################################################
-  calibration.period.list <- list()
-  
-  
-#------------------------------------------------------------------------------#
-# Reading in data, and preparing for later -------------------------------------
-#------------------------------------------------------------------------------#
-# About: This section reads in the data selected in the UI, and prepares the   #
-# user-selected inputs to facilitate code later on in the function.            #
-#------------------------------------------------------------------------------#
-  
-  ############################################
-  # Reading in the excel file: Original Data #
-  ############################################
-  Mydata <- data.temp
-  
-  # Pulling the data needed for each fitting index
-  for (i in 1:length(fitting_index)) {
-    
-    assign(paste0("actualcases", i), Mydata[[paste0("cases", i)]])
-    
+# Compact number formatting for plot titles (4 significant digits)
+bff_fmt <- function(x) {
+  x <- suppressWarnings(as.numeric(x))
+  if (length(x) == 0 || is.na(x)) return("NA")
+  formatC(signif(x, 4), format = "fg", big.mark = ",")
+}
+
+# ggplot histogram with the summary statistics in the title
+bff_hist_plot <- function(samples, label) {
+  samples <- as.numeric(samples)
+  samples <- samples[is.finite(samples)]
+  q   <- stats::quantile(samples, probs = c(0.025, 0.975))
+  med <- stats::median(samples)
+  mn  <- mean(samples)
+  df  <- data.frame(x = samples)
+  ggplot(df, aes(x = x)) +
+    geom_histogram(bins = 40, fill = "lightblue", color = "black") +
+    labs(
+      title = sprintf("%s  |  Median: %s   Mean: %s   95%% CrI: (%s, %s)",
+                      label, bff_fmt(med), bff_fmt(mn), bff_fmt(q[1]), bff_fmt(q[2])),
+      x = label, y = "Frequency"
+    ) +
+    theme_classic() +
+    theme(plot.title = element_text(size = 11))
+}
+
+# Forecast / fit plot (observed data, posterior median, 95% PI) with a legend
+bff_forecast_plot <- function(data, datetype, series_label, calibrationperiod,
+                              forecastinghorizon) {
+  plot <- ggplot(data, aes(x = Date)) +
+    geom_ribbon(aes(ymin = LB, ymax = UB), fill = "grey80", alpha = 0.45) +
+    geom_line(aes(y = LB, color = "95% PI", linetype = "95% PI"), linewidth = 0.5) +
+    geom_line(aes(y = UB, color = "95% PI", linetype = "95% PI"), linewidth = 0.5) +
+    geom_line(aes(y = median, color = "Posterior median", linetype = "Posterior median"),
+              linewidth = 1) +
+    geom_point(aes(y = Data, shape = "Observed data"), color = "black", fill = NA,
+               size = 1.8, stroke = 0.7, na.rm = TRUE) +
+    scale_color_manual(values = c("Posterior median" = "red", "95% PI" = "black")) +
+    scale_linetype_manual(values = c("Posterior median" = "solid", "95% PI" = "dashed")) +
+    scale_shape_manual(values = c("Observed data" = 21)) +
+    guides(
+      shape = guide_legend(order = 1, override.aes = list(fill = NA)),
+      color = guide_legend(order = 2),
+      linetype = guide_legend(order = 2)
+    ) +
+    labs(title = sprintf("%s  (calibration: %s %s%s)", series_label, calibrationperiod,
+                         tolower(datetype),
+                         if (forecastinghorizon > 0) sprintf(", forecast: %s", forecastinghorizon) else ""),
+         x = datetype, y = series_label, color = NULL, linetype = NULL, shape = NULL) +
+    theme_classic() +
+    theme(legend.position = "top", legend.direction = "horizontal",
+          legend.box = "horizontal", legend.title = element_blank())
+  if (forecastinghorizon > 0) {
+    plot <- plot + geom_vline(xintercept = calibrationperiod - 1, linetype = "dotted",
+                              linewidth = 1, color = "blue", show.legend = FALSE)
   }
-  
-  ####################################################
-  # Creating a vector of the error structure options #
-  ####################################################
-  errorstructure <- c("negativebinomial","normal","poisson")
-  
-  #########################################
-  # Empty data frames to later store data #
-  #########################################
-  result_data1 <- data.frame()
-  
-  result_data2 <- data.frame()
-  
-  ################################
-  # Array of calibration periods #
-  ################################
-  calibrationperiodLIST <- calibrationperiods
-  
-#------------------------------------------------------------------------------#
-# Obtaining Output: Unique for each calibration period -------------------------
-#------------------------------------------------------------------------------#
-# About: This section loops through each user selected calibration period to   #
-# produce various forms of output, included histograms, trace plots, and       #
-# various excel files.                                                         #
-#------------------------------------------------------------------------------#
- 
-  ################################
-  # Empty vector to store output #
-  ################################
-  calibration.period.list <- c()
-  
-  #######################################
-  # Looping through calibration periods #
-  #######################################
-  for(calibrationperiod in calibrationperiods){ 
-    
-    # Indexed calibration period
-    index <- which(calibrationperiodLIST == calibrationperiod)
+  plot
+}
 
-    #################################################################
-    # Looping through data to pull various pieces from RStan output #
-    #################################################################
-    for (i in 1:length(fitting_index)) {
-      
-      assign(paste0("my_solutionaggr", i), pred_cases[,,i])
-      assign(paste0("medcurve", i), apply(get(paste0("my_solutionaggr", i)), 2, median))
-      assign(paste0("mcmc_intervals_aggr", i), apply(get(paste0("my_solutionaggr", i)), 2, quantile, probs = c(0.025, 0.975)))
+#------------------------------------------------------------------------------#
+# Convergence summary (Rhat, ESS, divergences, treedepth, BFMI) -----------------
+#------------------------------------------------------------------------------#
+bff_convergence_summary <- function(fit, pars, calibrationperiod) {
+
+  sm <- tryCatch(rstan::summary(fit, pars = pars)$summary, error = function(e) NULL)
+  max_rhat <- if (!is.null(sm) && "Rhat" %in% colnames(sm)) suppressWarnings(max(sm[, "Rhat"], na.rm = TRUE)) else NA_real_
+  min_neff <- if (!is.null(sm) && "n_eff" %in% colnames(sm)) suppressWarnings(min(sm[, "n_eff"], na.rm = TRUE)) else NA_real_
+  if (!is.finite(max_rhat)) max_rhat <- NA_real_
+  if (!is.finite(min_neff)) min_neff <- NA_real_
+
+  n_div  <- tryCatch(rstan::get_num_divergent(fit), error = function(e) NA_integer_)
+  n_td   <- tryCatch(rstan::get_num_max_treedepth(fit), error = function(e) NA_integer_)
+  n_bfmi <- tryCatch(length(rstan::get_low_bfmi_chains(fit)), error = function(e) NA_integer_)
+
+  n_chains <- tryCatch(fit@sim$chains, error = function(e) NA_integer_)
+  n_iter   <- tryCatch(fit@sim$iter,   error = function(e) NA_integer_)
+  n_warm   <- tryCatch(fit@sim$warmup, error = function(e) NA_integer_)
+  n_thin   <- tryCatch(fit@sim$thin,   error = function(e) 1L)
+  n_draws  <- tryCatch(n_chains * floor((n_iter - n_warm) / n_thin), error = function(e) NA_integer_)
+
+  level <- 0  # 0 = good, 1 = caution, 2 = poor
+  advice <- character(0)
+
+  if (!is.na(max_rhat)) {
+    if (max_rhat > 1.1) {
+      level <- max(level, 2)
+      advice <- c(advice, sprintf("Rhat = %.2f > 1.1: chains have not mixed. Increase the number of iterations, check the priors / identifiability of the model.", max_rhat))
+    } else if (max_rhat > 1.05) {
+      level <- max(level, 1)
+      advice <- c(advice, sprintf("Rhat = %.2f is slightly above 1.05: consider running more iterations.", max_rhat))
     }
-    
+  }
+  if (!is.na(n_div) && n_div > 0) {
+    frac <- if (!is.na(n_draws) && n_draws > 0) n_div / n_draws else NA
+    if (!is.na(frac) && frac < 0.01) {
+      level <- max(level, 1)
+      advice <- c(advice, sprintf("%d divergent transition(s): increase adapt_delta (e.g. 0.95) in the sampler settings.", n_div))
+    } else {
+      level <- max(level, 2)
+      advice <- c(advice, sprintf("%d divergent transitions: the posterior is hard to explore. Increase adapt_delta (e.g. 0.95-0.99), reparameterize or tighten weakly-informative priors.", n_div))
+    }
+  }
+  if (!is.na(n_td) && n_td > 0) {
+    level <- max(level, 1)
+    advice <- c(advice, sprintf("%d transition(s) hit the maximum treedepth: increase max_treedepth (e.g. 12-15).", n_td))
+  }
+  if (!is.na(n_bfmi) && n_bfmi > 0) {
+    level <- max(level, 1)
+    advice <- c(advice, sprintf("%d chain(s) with low E-BFMI: the energy transitions are inefficient; reparameterization may help.", n_bfmi))
+  }
+  if (!is.na(min_neff) && !is.na(n_chains)) {
+    if (min_neff < 50 * n_chains) {
+      level <- max(level, 2)
+      advice <- c(advice, sprintf("Smallest effective sample size is %s: the posterior summaries are unreliable. Run more iterations.", bff_fmt(min_neff)))
+    } else if (min_neff < 100 * n_chains) {
+      level <- max(level, 1)
+      advice <- c(advice, sprintf("Smallest effective sample size is %s: consider running more iterations.", bff_fmt(min_neff)))
+    }
+  }
+  status <- c("Good", "Caution", "Poor")[level + 1]
+  if (length(advice) == 0) advice <- "No convergence problems detected."
+
+  data.frame(
+    CalibrationLength = calibrationperiod,
+    Chains = n_chains,
+    Iterations = n_iter,
+    Warmup = n_warm,
+    PosteriorDraws = n_draws,
+    MaxRhat = round(max_rhat, 3),
+    MinESS = round(min_neff, 1),
+    Divergences = n_div,
+    MaxTreedepthHits = n_td,
+    LowBFMIChains = n_bfmi,
+    Status = status,
+    Advice = paste(advice, collapse = " "),
+    stringsAsFactors = FALSE
+  )
+}
+
 #------------------------------------------------------------------------------#
-# Plotting the Histograms ------------------------------------------------------
+# Model-fit metrics (DIC, WAIC, LOOIC) for one fitted time series ---------------
 #------------------------------------------------------------------------------#
-# About: This section plots the parameter histograms. If there is an issue     #
-# where no samples to be plotted for a given parameter, an error will show to  #
-# the user.                                                                    # 
+# About: Uses the pointwise log-likelihood generated by Stan (`log_likK`) over   #
+# the calibration window. DIC uses the plug-in deviance at the posterior mean   #
+# of the expected value (`mu_casesK`) and of the dispersion / scale parameter.  #
 #------------------------------------------------------------------------------#
-    
-    #################################
-    # Unpacking the parameters list #
-    #################################
-    pars <- unlist(pars)
-    
-    ###########################################
-    # Initialize empty lists to store results #
-    ###########################################
-    mcmc_intervals <- list()
-    medians <- numeric(length(pars))
-    means <- numeric(length(pars))
-    lower_bounds <- numeric(length(pars))
-    upper_bounds <- numeric(length(pars))
-    
-    #######################
-    # List to store plots #
-    #######################
-    # Create the list dynamically
-    assign(paste0("plot.list.params.", calibrationperiod), list())
-    
-    # Reference the list name
-    plot_list_name <- paste0("plot.list.params.", calibrationperiod)
-    
-    ###############################
-    # Loop through each parameter #
-    ###############################
-    for (i in seq_along(pars)) {
-      
-      # Extract samples for the current parameter
-      current_samples <- param_samples[[pars[i]]]
-      
-      ######################################
-      # Check if there are samples to plot #
-      ######################################
-      if(length(current_samples) == 0) {
-        
-        # Retrieve the dynamically created list
-        temp_list <- get(plot_list_name)
-        
-        # Add the error message to the list
-        temp_list[[i]] <- paste0("No samples for parameter: ", pars[i])
-        
-        # Add a name to the corresponding element
-        names(temp_list)[i] <- "ERROR"
-        
-        # Update the dynamically created list in the global environment
-        assign(plot_list_name, temp_list)
-        
-        # Skip to the next loop iteration
-        next
-        
+bff_model_fit_metrics <- function(fit, series_index, observed, errstrc, aux_samples,
+                                  calibrationperiod, series_label) {
+
+  empty <- data.frame(CalibrationLength = calibrationperiod, Series = series_label,
+                      DIC = NA_real_, pD = NA_real_, WAIC = NA_real_, p_waic = NA_real_,
+                      LOOIC = NA_real_, p_loo = NA_real_, HighParetoK = NA_integer_,
+                      Note = "log_lik not available in the Stan program",
+                      stringsAsFactors = FALSE)
+
+  log_lik <- tryCatch(rstan::extract(fit, pars = paste0("log_lik", series_index))[[1]],
+                      error = function(e) NULL)
+  if (is.null(log_lik)) return(empty)
+  log_lik <- as.matrix(log_lik)
+
+  ok <- apply(log_lik, 1, function(r) all(is.finite(r)))
+  if (sum(ok) < 10) {
+    empty$Note <- "Too few finite log-likelihood draws"
+    return(empty)
+  }
+  log_lik <- log_lik[ok, , drop = FALSE]
+
+  ## ---- DIC (plug-in at posterior means) ----
+  deviance_draws <- -2 * rowSums(log_lik)
+  D_bar <- mean(deviance_draws)
+
+  mu_draws <- tryCatch(rstan::extract(fit, pars = paste0("mu_cases", series_index))[[1]],
+                       error = function(e) NULL)
+  D_hat <- NA_real_
+  if (!is.null(mu_draws)) {
+    mu_draws <- as.matrix(mu_draws)[ok, seq_len(ncol(log_lik)), drop = FALSE]
+    mu_bar <- colMeans(mu_draws)
+    mu_bar[mu_bar <= 0] <- 1e-10
+    obs <- observed[seq_len(ncol(log_lik))]
+    if (errstrc == 1) {
+      phi_bar <- mean(aux_samples[ok])
+      D_hat <- -2 * sum(dnbinom(round(obs), size = max(phi_bar, 1e-6), mu = mu_bar, log = TRUE))
+    } else if (errstrc == 2) {
+      sigma_bar <- mean(aux_samples[ok])
+      D_hat <- -2 * sum(dnorm(obs, mean = mu_bar, sd = max(sigma_bar, 1e-6), log = TRUE))
+    } else {
+      D_hat <- -2 * sum(dpois(round(obs), lambda = mu_bar, log = TRUE))
+    }
+  }
+  pD  <- if (is.finite(D_hat)) D_bar - D_hat else stats::var(deviance_draws) / 2
+  DIC <- D_bar + pD
+
+  ## ---- WAIC & LOO (loo package) ----
+  waic_est <- c(NA_real_, NA_real_)
+  loo_est  <- c(NA_real_, NA_real_)
+  high_k   <- NA_integer_
+  note     <- if (is.finite(D_hat)) "" else "DIC uses pD = var(deviance)/2"
+  if (requireNamespace("loo", quietly = TRUE)) {
+    w <- tryCatch(suppressWarnings(loo::waic(log_lik)), error = function(e) NULL)
+    if (!is.null(w)) waic_est <- c(w$estimates["waic", "Estimate"], w$estimates["p_waic", "Estimate"])
+    l <- tryCatch(suppressWarnings(loo::loo(log_lik, r_eff = NA)), error = function(e) NULL)
+    if (!is.null(l)) {
+      loo_est <- c(l$estimates["looic", "Estimate"], l$estimates["p_loo", "Estimate"])
+      k <- tryCatch(loo::pareto_k_values(l), error = function(e) NULL)
+      if (!is.null(k)) high_k <- sum(k > 0.7, na.rm = TRUE)
+      if (!is.na(high_k) && high_k > 0) {
+        note <- paste(note, sprintf("%d observation(s) with Pareto k > 0.7: LOOIC may be unreliable.", high_k))
       }
-      
-      ##################################################
-      # Calculate summary statistics for the histogram #
-      ##################################################
-      
-      # Calculating the quantiles from the current sample 
-      mcmc_intervals[[i]] <- quantile(current_samples, prob = c(0.025, 0.975))
-      
-      # Calculating the median of the sample 
-      medians[i] <- round(median(current_samples), digits = 2)
-      
-      # Calculating the mean of the sample 
-      means[i] <- round(mean(current_samples), digits = 2)
-      
-      # Calculating the lower bound of the sample 
-      lower_bounds[i] <- round(mcmc_intervals[[i]][1], digits = 2)
-      
-      # Calculating the upper bound of the sample 
-      upper_bounds[i] <- round(mcmc_intervals[[i]][2], digits = 2)
-      
-      ##########################
-      # Plotting the histogram #
-      ##########################
-      hist(current_samples,
-           main = sprintf("Median: %.2f, Mean: %.2f, 95%% CrI: %s",
-                          medians[i], means[i],
-                          sprintf("(%.2f, %.2f)", lower_bounds[i], upper_bounds[i])),
-           xlab = pars[i],
-           ylab = "Frequency",
-           col = "lightblue",
-           border = "black")
-                        
-      
-      ##################################
-      # Saving the results to the list #
-      ##################################
-      
-      # Retrieving the list 
-      temp_list <- get(plot_list_name) 
-      
-      # Saving the plot 
-      temp_list[[i]] <- recordPlot()
-      
-      # Adding the name
-      names(temp_list)[[i]] <- pars[i]
-      
-      # Update the list in the global environment
-      assign(plot_list_name, temp_list)
-      
-      # Explicitly close the plot object
-      dev.off() 
-      
     }
-    
+  } else {
+    note <- paste(note, "Package 'loo' not installed: WAIC/LOOIC skipped.")
+  }
+
+  data.frame(CalibrationLength = calibrationperiod, Series = series_label,
+             DIC = round(DIC, 2), pD = round(pD, 2),
+             WAIC = round(waic_est[1], 2), p_waic = round(waic_est[2], 2),
+             LOOIC = round(loo_est[1], 2), p_loo = round(loo_est[2], 2),
+             HighParetoK = high_k, Note = trimws(note),
+             stringsAsFactors = FALSE)
+}
+
 #------------------------------------------------------------------------------#
-# Plotting the composite sample histograms -------------------------------------
+# Main function ----------------------------------------------------------------
 #------------------------------------------------------------------------------#
-# About: This section plots the composite sample histograms. If there is an    #
-# issue where no samples to be plotted for a given composite sample, an        #
-# error will show to the user.                                                 #
-#------------------------------------------------------------------------------#
-    
-    #################################################################
-    # Initialize empty lists to store results for composite samples #
-    #################################################################
-    composite_mcmc_intervals <- list()
-    composite_medians <- numeric(length(composite_samples))
-    composite_means <- numeric(length(composite_samples))
-    composite_lower_bounds <- numeric(length(composite_samples))
-    composite_upper_bounds <- numeric(length(composite_samples))
-    
-    #######################
-    # List to store plots #
-    #######################
-    
-    # Create the list dynamically
-    assign(paste0("plot.list.composite.", calibrationperiod), list())
-    
-    # Reference the list name
-    plot_list_name <- paste0("plot.list.composite.", calibrationperiod)
-    
-    ##########################################
-    # Loop through each composite expression #
-    ##########################################
+run_analyzeResults <- function(optionsFile, MCMCOutput, data.temp, stan_warnings = list()) {
+
+  opt <- bff_load_options(optionsFile)
+
+  calibrationperiods <- as.numeric(opt$calibrationperiods)
+  forecastinghorizon <- as.numeric(opt$forecastinghorizon)
+  fitting_index      <- opt$fitting_index
+  errstrc            <- opt$errstrc
+  params             <- opt$params
+  paramsfix          <- as.numeric(opt$paramsfix)
+  datetype           <- opt$datetype %||% "Time"
+  series_cases       <- opt$series_cases %||% character(0)
+  time_dependent_templates <- opt$time_dependent_templates %||% list()
+  display_names <- if (exists("time_dependent_display_names", envir = opt, inherits = FALSE)) {
+    opt$time_dependent_display_names
+  } else NULL
+
+  n_series <- length(fitting_index)
+  series_labels <- vapply(seq_len(n_series), function(i) {
+    lab <- if (i <= length(series_cases)) trimws(as.character(series_cases[i])) else ""
+    if (!nzchar(lab) || is.na(lab)) paste0("Series ", i) else lab
+  }, character(1))
+  # Make labels unique (two series with the same label would collide)
+  series_labels <- make.unique(series_labels, sep = " #")
+
+  Mydata <- data.temp
+  actualcases <- lapply(seq_len(n_series), function(i) as.numeric(Mydata[[paste0("cases", i)]]))
+
+  # Accept the legacy single-fit structure as well (list with element names)
+  if (!is.null(names(MCMCOutput)) && "param_samples" %in% names(MCMCOutput)) {
+    MCMCOutput <- list(MCMCOutput)
+    names(MCMCOutput) <- as.character(calibrationperiods[1])
+  }
+  if (length(MCMCOutput) != length(calibrationperiods)) {
+    stop(sprintf("Expected results for %d calibration period(s) but received %d.",
+                 length(calibrationperiods), length(MCMCOutput)))
+  }
+
+  calibration.period.list <- vector("list", length(calibrationperiods))
+  names(calibration.period.list) <- as.character(calibrationperiods)
+
+  for (index in seq_along(calibrationperiods)) {
+
+    calibrationperiod <- calibrationperiods[index]
+    res <- MCMCOutput[[index]]
+
+    param_samples         <- res$param_samples
+    pred_cases            <- res$pred_cases
+    fit_ode_model         <- res$fit_ode_model
+    pars                  <- unlist(res$pars)
+    composite_expressions <- res$composite_expressions %||% list()
+    composite_samples     <- res$composite_samples %||% list()
+
+    n_total <- calibrationperiod + forecastinghorizon
+
+    ## ---- Posterior predictive summaries per series ----
+    my_solutionaggr <- lapply(seq_len(n_series), function(i) {
+      m <- pred_cases[, , i]
+      if (is.null(dim(m))) m <- matrix(m, ncol = 1)
+      m
+    })
+    medcurve <- lapply(my_solutionaggr, function(m) apply(m, 2, stats::median))
+    mcmc_intervals_aggr <- lapply(my_solutionaggr, function(m) {
+      apply(m, 2, stats::quantile, probs = c(0.025, 0.975))
+    })
+
+    ## ---- Parameter histograms ----
+    plot.list.params <- list()
+    for (p in pars) {
+      current_samples <- param_samples[[p]]
+      if (length(current_samples) == 0) next
+      plot.list.params[[p]] <- bff_hist_plot(current_samples, p)
+    }
+
+    ## ---- Composite-expression histograms ----
+    plot.list.composite <- list()
     for (name in names(composite_expressions)) {
-      
-      # Extract samples for the current composite expression
       current_samples <- composite_samples[[name]]
-      
-      ######################################
-      # Check if there are samples to plot #
-      ######################################
-      if(length(current_samples) == 0) {
-        
-        # Retrieve the dynamically created list
-        temp_list <- get(plot_list_name)
-        
-        # Add the error message to the list
-        temp_list[[i]] <- paste0("No samples for composite expression: ", name)
-        
-        # Add a name to the corresponding element
-        names(temp_list)[i] <- "ERROR"
-        
-        # Update the dynamically created list in the global environment
-        assign(plot_list_name, temp_list)
-        
-        # Skip to the next loop iteration
-        next
-        
-      }
-      
-      ###################################################
-      # Calculate summary statistics for the histograms #
-      ###################################################
-      
-      # Calculating the quantiles from the current sample 
-      mcmc_intervals <- quantile(current_samples, prob = c(0.025, 0.975))
-      
-      # Calculating the median of the sample
-      composite_medians <- round(median(current_samples), digits = 2)
-      
-      # Calculating the mean of the sample
-      composite_means <- round(mean(current_samples), digits = 2)
-      
-      # Calculating the lower bound of the sample
-      composite_lower_bounds <- round(mcmc_intervals[1], digits = 2)
-      
-      # Calculating the upper bound of the sample
-      composite_upper_bounds <- round(mcmc_intervals[2], digits = 2)
-      
-      ##########################
-      # Plotting the histogram #
-      ##########################
-      hist(current_samples, 
-           main = sprintf("%s - Median: %.2f, Mean: %.2f, 95%% CrI: %s",
-                          name, composite_medians, composite_means,
-                          sprintf("(%.2f, %.2f)", composite_lower_bounds, composite_upper_bounds)), 
-           xlab = name, 
-           ylab = "Frequency", 
-           col = "lightblue", 
-           border = "black")
-      
-      ##################################
-      # Saving the results to the list #
-      ##################################
-      
-      # Retrieving the list 
-      temp_list <- get(plot_list_name) 
-      
-      # Saving the plot 
-      temp_list[[i]] <- recordPlot()
-      
-      # Adding the name
-      names(temp_list)[[i]] <- name
-      
-      # Update the list in the global environment
-      assign(plot_list_name, temp_list)
-      
-      # Explicitly close the plot object
-      dev.off() 
-      
+      if (length(current_samples) == 0) next
+      plot.list.composite[[name]] <- bff_hist_plot(current_samples, name)
     }
-    
-#------------------------------------------------------------------------------#
-# Plotting the Trace Plots -----------------------------------------------------
-#------------------------------------------------------------------------------#
-# About: This section plots the trace plots obtained from the model fit, and   #
-# saves the plot within the list based on its calibration period.              #
-#------------------------------------------------------------------------------#
-    
-    #######################
-    # List to store plots #
-    #######################
-    
-    # Create the list dynamically
-    assign(paste0("plot.list.trace.", calibrationperiod), NULL)
-    
-    # Reference the list name
-    plot_list_name <- paste0("plot.list.trace.", calibrationperiod)
-    
-    ##########################
-    # Creating the traceplot #
-    ##########################
-    trace.plot <- traceplot(fit_ode_model, pars = pars)
-    
-    ##########################################
-    # Saving the results to the empty vector #
-    ##########################################
-    
-    # Retrieving the temp plot 
-    temp_plot <- get(plot_list_name) 
-    
-    # Saving the plot 
-    temp_plot <- trace.plot
-    
-    # Update the temp plot in the global environment
-    assign(plot_list_name, temp_plot)
-    
-#------------------------------------------------------------------------------#
-# Posterior Distribution figure ------------------------------------------------
-#------------------------------------------------------------------------------#
-# About: This section creates the posterior distribution figure for each       #
-# calibration period length.                                                   #
-#------------------------------------------------------------------------------#
-    
-    #######################
-    # List to store plots #
-    #######################
-    
-    # Create the list dynamically
-    assign(paste0("plot.list.posterior.", calibrationperiod), NULL)
-    
-    # Reference the list name
-    plot_list_name <- paste0("plot.list.posterior.", calibrationperiod)
-    
-    ###############################
-    # Creating the posterior plot #
-    ###############################
-    post.plot <- stan_dens(fit_ode_model, pars = pars, separate_chains = TRUE)
-    
-    ##########################################
-    # Saving the results to the empty vector #
-    ##########################################
-    
-    # Retrieving the temp plot 
-    temp_plot <- get(plot_list_name) 
-    
-    # Saving the plot 
-    temp_plot <- post.plot
-    
-    # Update the temp plot in the global environment
-    assign(plot_list_name, temp_plot)
-    
-#------------------------------------------------------------------------------#
-# Performance Metrics ----------------------------------------------------------
-#------------------------------------------------------------------------------#
-# About: This section calculates the performance metrics for the median curve  #
-# and forecasting period for each calibration period. In a later step, the     #
-# results are then saved in a list to be returned to the main dashboard.       #
-#------------------------------------------------------------------------------#
-    
-    ################################################################################################
-    # Defining the actual cases and the median curve for calibration period and forecasting period #
-    ################################################################################################
-    for (i in 1:length(fitting_index)) {
-      
-      # Pulling the observed value for the data 
-      assign(paste0("actual", i, "_calibration"), get(paste0("actualcases", i))[1:calibrationperiod])
-      
-      # Pulling the median curve 
-      assign(paste0("medcurve", i, "_calibration"), get(paste0("medcurve", i))[1:calibrationperiod])
-      
-      # Pulling the quantiles 
-      assign(paste0("mysolutionaggr", i, "_calibration"), get(paste0("my_solutionaggr", i))[, 1:calibrationperiod])
-      
-      ##############################################################################
-      # Creating the data frames to score information when a forecast is requested #
-      ##############################################################################
-      if (forecastinghorizon>0){
-        
-        # Pulling the observed value for the data 
-        assign(paste0("actual", i, "_forecast"), get(paste0("actualcases", i))[(calibrationperiod + 1):(calibrationperiod + forecastinghorizon)])
-        
-        # Pulling the median curve 
-        assign(paste0("medcurve", i, "_forecast"), get(paste0("medcurve", i))[(calibrationperiod + 1):(calibrationperiod + forecastinghorizon)])
-        
-        # Pulling the quantiles  
-        assign(paste0("mysolutionaggr", i, "_forecast"), get(paste0("my_solutionaggr", i))[, (calibrationperiod + 1):(calibrationperiod + forecastinghorizon)])
-      }
-      
-      ###################################################
-      # Calculating the MAE, MSE, WIS, and 95% PI coverage #
-      ###################################################
-      
-      # Calculating the MAE 
-      assign(paste0("mae", i, "_calibration"), calculate_mae(get(paste0("actual", i, "_calibration")), get(paste0("medcurve", i, "_calibration"))))
-      
-      # Calculating the MSE 
-      assign(paste0("mse", i, "_calibration"), calculate_mse(get(paste0("actual", i, "_calibration")), get(paste0("medcurve", i, "_calibration"))))
-      
-      # Calculating the WIS 
-      assign(paste0("wis", i, "_calibration"), calculate_WIS(get(paste0("mysolutionaggr", i, "_calibration")), get(paste0("actual", i, "_calibration"))))
-      
-      # Calculating coverage of the 95% prediction interval
-      assign(paste0("coverage", i, "_calibration"), calculate_percent_within_interval_calibration(get(paste0("actual", i, "_calibration")), get(paste0("mcmc_intervals_aggr", i))))
-      
-      #####################################################################
-      # Check if the forecast period is within the length of actual cases #
-      #####################################################################
-      if ((calibrationperiod + forecastinghorizon) <= length(actualcases1) && forecastinghorizon > 0) {
-        
-        # Calculating the MAE 
-        assign(paste0("mae", i, "_forecast"), calculate_mae(get(paste0("actual", i, "_forecast")), get(paste0("medcurve", i, "_forecast"))))
-        
-        # Calculating the MSE 
-        assign(paste0("mse", i, "_forecast"), calculate_mse(get(paste0("actual", i, "_forecast")), get(paste0("medcurve", i, "_forecast"))))
-        
-        ##################################
-        # Creating a matrix of quantiles #
-        ##################################
-        if(forecastinghorizon==1){
-          
-          # Creating the matrix of quantiles 
-          assign(paste0("mysolutionaggr", i, "_forecast"), matrix(get(paste0("mysolutionaggr", i, "_forecast")), ncol = 1))
-          
-        }
-        
-        # Calculating the WIS 
-        assign(paste0("wis", i, "_forecast"), calculate_WIS(get(paste0("mysolutionaggr", i, "_forecast")), get(paste0("actual", i, "_forecast"))))
-        
-        # Calculating coverage of the 95% prediction interval
-        assign(paste0("coverage", i, "_forecast"), calculate_percent_within_interval_forecast(get(paste0("actual", i, "_forecast")), get(paste0("mcmc_intervals_aggr", i)), calibrationperiod))
-      
-      ##########################################################################
-      # Set metrics to NA if data is not available to evaluate forecast period #
-      ##########################################################################
-      }else{
-        
-        # Set MAE variable to NA
-        assign(paste0("mae", i, "_forecast"),NA)
-        
-        # Set MSE variable to NA
-        assign(paste0("mse", i, "_forecast"),NA)
-        
-        # Set WIS variable to NA
-        assign(paste0("wis", i, "_forecast"),NA)
-        
-        # Set 95% PI coverage variable to NA
-        assign(paste0("coverage", i, "_forecast"),NA)
-        
-      }
-      
-    }
-    
-#------------------------------------------------------------------------------#
-# Generating the excel files: Performance Metrics ------------------------------
-#------------------------------------------------------------------------------#
-# About: This section creates the performance metrics data frame which shows   #
-# to the main dashboard.                                                       #
-#------------------------------------------------------------------------------#
-    
-    #############################
-    # List to store excel files #
-    #############################
-    
-    # Create the list dynamically
-    assign(paste0("performance.metrics.", calibrationperiod), NULL)
-    
-    # Reference the list name
-    performance.metrics.list <- paste0("performance.metrics.", calibrationperiod)
-    
-    ################################################
-    # Assuming series_cases is an array of strings #
-    ################################################
-    for (i in 1:length(fitting_index)) {
-      
-      # Create the data frame for the current index
-      data <- data.frame(
-        
-        Metrics = c(rep(c("MAE", "MSE", "WIS", "Coverage of 95% PI"))), 
-        Calibration = c(get(paste0("mae", i, "_calibration")), 
-                        get(paste0("mse", i, "_calibration")), 
-                        get(paste0("wis", i, "_calibration")), 
-                        get(paste0("coverage", i, "_calibration"))),
-        Forecasting = c(get(paste0("mae", i, "_forecast")), 
-                        get(paste0("mse", i, "_forecast")), 
-                        get(paste0("wis", i, "_forecast")), 
-                        get(paste0("coverage", i, "_forecast"))),
-        CalibrationLength = rep(calibrationperiod, 4))
-        
-        ##########################################
-        # Saving the results to the empty vector #
-        ##########################################
-        
-        # Update the temp data in the global environment
-        assign(performance.metrics.list, data)
-        
-    }
-        
-#------------------------------------------------------------------------------#
-# Creating the data frame for forecast -----------------------------------------
-#------------------------------------------------------------------------------#
-# About: This section creates the data frame that stores the forecasts and     #
-# model fits.                                                                  #
-#------------------------------------------------------------------------------#
-    
-    for (i in 1:length(fitting_index)) {
-      
-      #############################
-      # List to store excel files #
-      #############################
-      
-      # Create the list dynamically
-      assign(paste0("forecasts.fits.", calibrationperiod), NULL)
-      
-      # Reference the list name
-      forecast.fits.list <- paste0("forecasts.fits.", calibrationperiod)
-      
-      ##############################
-      # Retrieve and process cases #
-      ##############################
-      cases_i <- as.integer(get(paste0("actualcases", i))[1:(calibrationperiod+forecastinghorizon)])
-      
-      # Adding name to the cases data frame 
-      assign(paste0("cases", i), cases_i)
-      
-      ###############################################
-      # Create the data frame for the current index #
-      ###############################################
-      data <- data.frame(
-        Date = 0:(calibrationperiod + forecastinghorizon - 1),
-        Data = c(cases_i, rep(NA, (calibrationperiod + forecastinghorizon) - length(cases_i))),
-        median = round(get(paste0("medcurve", i))[1:(calibrationperiod + forecastinghorizon)], 1),
-        LB = pmax(0, round(get(paste0("mcmc_intervals_aggr", i))[1, 1:(calibrationperiod + forecastinghorizon)], 1)),
-        UB = round(get(paste0("mcmc_intervals_aggr", i))[2, 1:(calibrationperiod + forecastinghorizon)], 1))
-      
-      ##########################################
-      # Saving the results to the empty vector #
-      ##########################################
-      
-      # Retrieving the temp data
-      temp_data <- get(forecast.fits.list) 
 
-      # Update the temp data in the global environment
-      assign(forecast.fits.list, data)
-      
-      
-#------------------------------------------------------------------------------#
-# Plotting the model fits and forecast -----------------------------------------
-#------------------------------------------------------------------------------#
-# About: This section plots the model fits and forecasts and then saves the    #
-# ggplot to the list.                                                          #
-#------------------------------------------------------------------------------#
-      
-      #############################
-      # List to store excel files #
-      #############################
-      
-      # Create the list dynamically
-      assign(paste0("forecasts.fits.plot", calibrationperiod), NULL)
-      
-      # Reference the list name
-      forecast.fits.plot.list <- paste0("forecasts.fits.plot", calibrationperiod)
-      
-      #######################################
-      # Plotting the model fit and forecast #
-      #######################################
-      plot <- ggplot(data, aes(x = Date)) +
-        geom_point(aes(y = Data), shape = 21, color = "black", fill = NA, size = 1.5, stroke = 0.7, show.legend = FALSE) +
-        geom_line(aes(y = median), color = "red", size = 1, show.legend = FALSE) +
-        geom_line(aes(y = LB), color = "black", linetype = "dashed", size = 0.5, show.legend = FALSE) +
-        geom_line(aes(y = UB), color = "black", linetype = "dashed", size = 0.5, show.legend = FALSE) +
-        labs(title = '', x = datetype, y = series_cases[i]) + 
-        theme_classic()
-      
-      # Add the vertical line conditionally
+    ## ---- Trace and posterior-density plots ----
+    plot.list.trace <- tryCatch(rstan::traceplot(fit_ode_model, pars = pars),
+                                error = function(e) NULL)
+    plot.list.posterior <- tryCatch(rstan::stan_dens(fit_ode_model, pars = pars, separate_chains = TRUE),
+                                    error = function(e) NULL)
+
+    ## ---- Performance metrics, forecast tables and forecast plots (per series) ----
+    performance.metrics <- data.frame()
+    forecasts.fits <- list()
+    forecasts.fits.plot <- list()
+    model.fit.metrics <- data.frame()
+
+    for (i in seq_len(n_series)) {
+
+      obs_all <- actualcases[[i]]
+      actual_calibration <- obs_all[seq_len(calibrationperiod)]
+      medcurve_calibration <- medcurve[[i]][seq_len(calibrationperiod)]
+      sol_calibration <- my_solutionaggr[[i]][, seq_len(calibrationperiod), drop = FALSE]
+
+      mae_cal <- calculate_mae(actual_calibration, medcurve_calibration)
+      mse_cal <- calculate_mse(actual_calibration, medcurve_calibration)
+      wis_cal <- calculate_WIS(sol_calibration, actual_calibration)
+      cov_cal <- calculate_percent_within_interval_calibration(actual_calibration, mcmc_intervals_aggr[[i]])
+
+      mae_fc <- mse_fc <- wis_fc <- cov_fc <- NA_real_
+      n_fc_eval <- 0L
       if (forecastinghorizon > 0) {
-        
-        plot <- plot + geom_vline(xintercept = calibrationperiod - 1, linetype = "dotted", size = 1, color = "blue", show.legend = FALSE)
-        
+        fc_idx <- (calibrationperiod + 1):(calibrationperiod + forecastinghorizon)
+        fc_idx <- fc_idx[fc_idx <= length(obs_all)]
+        fc_idx <- fc_idx[!is.na(obs_all[fc_idx])]
+        n_fc_eval <- length(fc_idx)
+        if (n_fc_eval > 0) {
+          actual_forecast <- obs_all[fc_idx]
+          medcurve_forecast <- medcurve[[i]][fc_idx]
+          sol_forecast <- my_solutionaggr[[i]][, fc_idx, drop = FALSE]
+          mae_fc <- calculate_mae(actual_forecast, medcurve_forecast)
+          mse_fc <- calculate_mse(actual_forecast, medcurve_forecast)
+          wis_fc <- calculate_WIS(sol_forecast, actual_forecast)
+          cov_fc <- calculate_percent_within_interval_forecast(actual_forecast,
+                                                               mcmc_intervals_aggr[[i]],
+                                                               calibrationperiod)
+        }
       }
-      
-      ##########################################
-      # Saving the results to the empty vector #
-      ##########################################
-      
-      # Retrieving the temp plot 
-      temp_plot <- get(forecast.fits.plot.list) 
-      
-      # Saving the plot 
-      temp_plot <- plot
-      
-      # Update the temp plot in the global environment
-      assign(forecast.fits.plot.list, temp_plot)
 
-    }
-    
-#------------------------------------------------------------------------------#
-# Storing the parameter values -------------------------------------------------
-#------------------------------------------------------------------------------#
-# About: This section stores the parameter mean, median, and bounds in a       #
-# data frame. It then exports the data frame to the dashboard via a list.      #
-#------------------------------------------------------------------------------#
-    
-    ######################################
-    # Loop through each parameter values #
-    ######################################
-    for (i in seq_along(pars)) {
-      
-      # Extract samples for the current parameter
-      current_samples <- param_samples[[pars[i]]]
-      
-      # Calculate mcmc interval
-      mcmc_interval <- quantile(current_samples, prob=c(.025,.975))
-      
-      # Calculate median
-      median_value <- round(median(current_samples), digits = 2)
-      
-      # Calculate mean
-      mean_value <- round(mean(current_samples), digits = 2)
-      
-      # Extract lower bounds of the 95% credible interval
-      lower_bound <- round(mcmc_interval[1], digits = 2)
-      
-      # Extract upper bounds of the 95% credible interval
-      upper_bound <- round(mcmc_interval[2], digits = 2)
-      
-      ##################################################
-      # Prepare a data frame for the current parameter #
-      ##################################################
-      data <- data.frame(
+      performance.metrics <- rbind(performance.metrics, data.frame(
+        Series = series_labels[i],
+        Metrics = c("MAE", "MSE", "WIS", "Coverage of 95% PI"),
+        Calibration = c(mae_cal, mse_cal, wis_cal, cov_cal),
+        Forecasting = c(mae_fc, mse_fc, wis_fc, cov_fc),
         CalibrationLength = calibrationperiod,
-        parameter = pars[i],  # Assuming pars contains parameter names
-        median = median_value,
-        mean = mean_value,
-        `95% CrI lower` = lower_bound,
-        `95% CrI upper` = upper_bound,
-        check.names = FALSE
+        ForecastPointsEvaluated = n_fc_eval,
+        stringsAsFactors = FALSE
+      ))
+
+      ## Forecast table (observed, median, 95% PI)
+      cases_i <- obs_all[seq_len(min(n_total, length(obs_all)))]
+      fc_table <- data.frame(
+        Date   = 0:(n_total - 1),
+        Data   = c(cases_i, rep(NA, n_total - length(cases_i))),
+        median = round(medcurve[[i]][seq_len(n_total)], 1),
+        LB     = pmax(0, round(mcmc_intervals_aggr[[i]][1, seq_len(n_total)], 1)),
+        UB     = round(mcmc_intervals_aggr[[i]][2, seq_len(n_total)], 1),
+        Period = c(rep("Calibration", calibrationperiod), rep("Forecast", forecastinghorizon)),
+        stringsAsFactors = FALSE
       )
-      
-      
-      # Append the current parameter data to result_data
-      result_data1 <- rbind(result_data1, data)
-  
+      forecasts.fits[[series_labels[i]]] <- fc_table
+      forecasts.fits.plot[[series_labels[i]]] <- bff_forecast_plot(
+        fc_table, datetype, series_labels[i], calibrationperiod, forecastinghorizon
+      )
+
+      ## Model-fit metrics (DIC / WAIC / LOOIC)
+      aux <- if (errstrc == 1) param_samples[[paste0("phi", i)]] else if (errstrc == 2) param_samples[[paste0("sigma", i)]] else NULL
+      mfm <- tryCatch(
+        bff_model_fit_metrics(fit_ode_model, i, actual_calibration, errstrc, aux,
+                              calibrationperiod, series_labels[i]),
+        error = function(e) data.frame(CalibrationLength = calibrationperiod, Series = series_labels[i],
+                                       DIC = NA, pD = NA, WAIC = NA, p_waic = NA, LOOIC = NA, p_loo = NA,
+                                       HighParetoK = NA, Note = conditionMessage(e), stringsAsFactors = FALSE)
+      )
+      model.fit.metrics <- rbind(model.fit.metrics, mfm)
     }
 
-#------------------------------------------------------------------------------#
-# Storing information regarding parameters -------------------------------------
-#------------------------------------------------------------------------------#
-# About: This section stores information about the parameters and other        #
-# statistics into a data frame.                                                #
-#------------------------------------------------------------------------------#
-    
-    ############################################################
-    # Initialize an empty data frame to store parameter values #
-    ############################################################
+    ## ---- Parameter summary tables ----
+    result_data1 <- data.frame()
     result_data2 <- data.frame()
-    
-    #######################################
-    # Loop through each parameter in pars #
-    #######################################
-    for (param in pars) {
-      
-      # Calculate median for the current parameter
-      median_value <- round(median(param_samples[[param]]), digits = 2)
-      
-      # Calculate mcmc interval for the current parameter
-      mcmc_interval <- quantile(param_samples[[param]], prob=c(.025,.975))
-      
-      # Extract necessary summary statistics from fit_seir_negbin for the current parameter
-      mean_value <- round(summary(fit_ode_model)$summary[param, "mean"], 2)
-      n_eff_value <- round(summary(fit_ode_model)$summary[param, "n_eff"], 2)
-      Rhat_value <- round(summary(fit_ode_model)$summary[param, "Rhat"], 2)
-      
-      # Construct 95% credible interval string for the current parameter
-      credible_interval_95 <- sprintf("(%.2f, %.2f)", mcmc_interval[1], mcmc_interval[2])
-      
-      # Create a data frame for the current parameter
-      parameter_data <- data.frame(
+    fit_summary <- tryCatch(rstan::summary(fit_ode_model, pars = pars)$summary, error = function(e) NULL)
+    for (p in pars) {
+      current_samples <- param_samples[[p]]
+      if (length(current_samples) == 0) next
+      mcmc_interval <- stats::quantile(current_samples, prob = c(.025, .975))
+      median_value  <- stats::median(current_samples)
+      mean_value    <- mean(current_samples)
+      result_data1 <- rbind(result_data1, data.frame(
         CalibrationLength = calibrationperiod,
-        Parameter = param,
-        Mean = mean_value,
-        Median = median_value,
-        `95% CrI` = credible_interval_95,
+        parameter = p,
+        median = signif(median_value, 4),
+        mean = signif(mean_value, 4),
+        `95% CrI lower` = signif(mcmc_interval[1], 4),
+        `95% CrI upper` = signif(mcmc_interval[2], 4),
+        check.names = FALSE, row.names = NULL
+      ))
+      n_eff_value <- if (!is.null(fit_summary) && p %in% rownames(fit_summary)) round(fit_summary[p, "n_eff"], 1) else NA
+      rhat_value  <- if (!is.null(fit_summary) && p %in% rownames(fit_summary)) round(fit_summary[p, "Rhat"], 3) else NA
+      result_data2 <- rbind(result_data2, data.frame(
+        CalibrationLength = calibrationperiod,
+        Parameter = p,
+        Mean = signif(mean_value, 4),
+        Median = signif(median_value, 4),
+        `95% CrI` = sprintf("(%s, %s)", bff_fmt(mcmc_interval[1]), bff_fmt(mcmc_interval[2])),
         N_eff = n_eff_value,
-        Rhat = Rhat_value,
-        check.names = FALSE,
-        row.names = NULL
-      )
-      
-      # Append parameter_data to result_data2
-      result_data2 <- rbind(result_data2, parameter_data)
-      
+        Rhat = rhat_value,
+        check.names = FALSE, row.names = NULL
+      ))
+    }
+    # Composite expressions are reported in the same summary table
+    for (name in names(composite_expressions)) {
+      current_samples <- composite_samples[[name]]
+      if (length(current_samples) == 0) next
+      mcmc_interval <- stats::quantile(current_samples, prob = c(.025, .975))
+      result_data2 <- rbind(result_data2, data.frame(
+        CalibrationLength = calibrationperiod,
+        Parameter = paste0(name, " (composite)"),
+        Mean = signif(mean(current_samples), 4),
+        Median = signif(stats::median(current_samples), 4),
+        `95% CrI` = sprintf("(%s, %s)", bff_fmt(mcmc_interval[1]), bff_fmt(mcmc_interval[2])),
+        N_eff = NA, Rhat = NA,
+        check.names = FALSE, row.names = NULL
+      ))
     }
 
-#------------------------------------------------------------------------------#
-# Time-dependent parameter posterior curves ------------------------------------
-#------------------------------------------------------------------------------#
-# About: If the options file contains time_dependent_templates, evaluate each  #
-# template across posterior draws and the model time grid. This produces one   #
-# plot per time-dependent parameter and one exportable summary table.          #
-#------------------------------------------------------------------------------#
+    ## ---- Convergence summary ----
+    convergence.summary <- tryCatch(
+      bff_convergence_summary(fit_ode_model, pars, calibrationperiod),
+      error = function(e) data.frame(CalibrationLength = calibrationperiod, Status = "Unknown",
+                                     Advice = conditionMessage(e), stringsAsFactors = FALSE)
+    )
 
+    ## ---- Stan warnings captured during sampling (passed in from the app) ----
+    warn_key <- as.character(calibrationperiod)
+    this_warnings <- if (!is.null(stan_warnings[[warn_key]])) stan_warnings[[warn_key]] else character(0)
+
+    ## ---- Posterior draws for download ----
+    posterior.draws <- tryCatch({
+      as.data.frame(fit_ode_model, pars = c(pars, names(composite_expressions)))
+    }, error = function(e) {
+      tryCatch(as.data.frame(param_samples), error = function(e2) data.frame())
+    })
+
+    ## ---- Time-dependent parameters ----
     tdp.result <- list(plots = list(), tables = data.frame())
-    if (exists("time_dependent_templates") &&
-        !is.null(time_dependent_templates) &&
-        length(time_dependent_templates) > 0) {
+    if (length(time_dependent_templates) > 0) {
       tdp.result <- tryCatch(
-        {
-          tdp_analysis_outputs(
-            param_samples = param_samples,
-            params = params,
-            paramsfix = paramsfix,
-            time_dependent_templates = time_dependent_templates,
-            t_range = 0:(calibrationperiod + forecastinghorizon - 1),
-            calibrationperiod = calibrationperiod,
-            option_env = environment(),
-            display_names = if (exists("time_dependent_display_names")) {
-              time_dependent_display_names
-            } else {
-              NULL
-            },
-            date_label = datetype
-          )
-        },
+        tdp_analysis_outputs(
+          param_samples = param_samples,
+          params = params,
+          paramsfix = paramsfix,
+          time_dependent_templates = time_dependent_templates,
+          t_range = 0:(n_total - 1),
+          calibrationperiod = calibrationperiod,
+          option_env = opt,
+          display_names = display_names,
+          date_label = datetype
+        ),
         error = function(e) {
           message("Time-dependent posterior curves skipped: ", conditionMessage(e))
           list(plots = list(), tables = data.frame())
         }
       )
     }
-  
-#------------------------------------------------------------------------------#
-# Forming the master list ------------------------------------------------------
-#------------------------------------------------------------------------------#
-# About: This section creates the master list that is output to the main       #
-# dashboard. The list contains each of the plots for each of the calibration   #
-# periods.                                                                     #
-#------------------------------------------------------------------------------#
-    
-    #################################################
-    # Creating the calibration period specific list #
-    #################################################
-    calibration.list <- list(get(paste0("plot.list.params.", calibrationperiod)),
-                             get(paste0("plot.list.composite.", calibrationperiod)), 
-                             get(paste0("plot.list.trace.", calibrationperiod)),
-                             get(paste0("plot.list.posterior.", calibrationperiod)),
-                             get(paste0("performance.metrics.", calibrationperiod)),
-                             get(paste0("forecasts.fits.", calibrationperiod)),
-                             get(paste0("forecasts.fits.plot", calibrationperiod)),
-                             tdp.result$plots,
-                             tdp.result$tables,
-                             result_data1,
-                             result_data2)
-    
-    # Adding the names to the list
-    names(calibration.list) <- c(paste0("plot.list.params"),
-                                 paste0("plot.list.composite"), 
-                                 paste0("plot.list.trace"),
-                                 paste0("plot.list.posterior"),
-                                 paste0("performance.metrics"),
-                                 paste0("forecasts.fits"),
-                                 paste0("forecasts.fits.plot"),
-                                 paste0("plot.list.time.dependent"),
-                                 paste0("time.dependent.values"),
-                                 paste0("parameter.values"),
-                                 paste0("add.parameter.values"))
-    
-    # Adding to the calibration period list
-    calibration.period.list[[index]] <- calibration.list
-    
-    # Adding the name to the list
-    names(calibration.period.list)[[index]] <- paste0(calibrationperiod)
-                   
+
+    calibration.period.list[[index]] <- list(
+      plot.list.params          = plot.list.params,
+      plot.list.composite       = plot.list.composite,
+      plot.list.trace           = plot.list.trace,
+      plot.list.posterior       = plot.list.posterior,
+      performance.metrics       = performance.metrics,
+      forecasts.fits            = forecasts.fits,
+      forecasts.fits.plot       = forecasts.fits.plot,
+      plot.list.time.dependent  = tdp.result$plots,
+      time.dependent.values     = tdp.result$tables,
+      parameter.values          = result_data1,
+      add.parameter.values      = result_data2,
+      model.fit.metrics         = model.fit.metrics,
+      convergence.summary       = convergence.summary,
+      stan.warnings             = this_warnings,
+      posterior.draws           = posterior.draws,
+      series.labels             = series_labels
+    )
   }
-  
-  return(calibration.period.list)
+
+  calibration.period.list
 }
-
-

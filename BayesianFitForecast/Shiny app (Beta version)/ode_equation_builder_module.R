@@ -70,21 +70,47 @@ ode_builder_typeset_script <- function(ns) {
   )))
 }
 
-ode_builder_token_row <- function(label, display, serial, kind) {
+ode_builder_token_row <- function(label, display, serial, kind, key = serial) {
   data.frame(
     label = as.character(label),
     display = as.character(display),
     serial = as.character(serial),
     kind = as.character(kind),
+    key = as.character(key),
+    ic = FALSE,
     stringsAsFactors = FALSE
   )
 }
 
+# Catalog rows for state variables / parameters.
+#
+# `x` is either
+#   * a named character vector: names = display labels, values = serials
+#     ("vars1", "params2", ...); the serial doubles as the stable key, or
+#   * a data.frame with the columns `key` (stable identity of the row, e.g. the
+#     id of the form row) and `display` (current name, may still be empty). The
+#     positional serial (varsN / paramsN) is derived from the row order, so the
+#     tokens stored in the equations keep pointing at the right variable when
+#     rows are added, removed or renamed.
 ode_builder_named_vector_to_tokens <- function(x, kind) {
-  if (is.null(x) || length(x) == 0) {
-    return(data.frame(label = character(0), display = character(0),
-                      serial = character(0), kind = character(0)))
+  empty <- ode_builder_empty_catalog()
+  if (is.null(x) || length(x) == 0 || NROW(x) == 0) return(empty)
+
+  prefix <- switch(kind, state = "vars", param = "params", "")
+
+  if (is.data.frame(x)) {
+    n <- NROW(x)
+    display <- trimws(as.character(x$display %||% rep("", n)))
+    display[is.na(display)] <- ""
+    key <- as.character(x$key %||% paste0(prefix, seq_len(n)))
+    serial <- if ("serial" %in% names(x)) as.character(x$serial) else paste0(prefix, seq_len(n))
+    out <- data.frame(label = display, display = display, serial = serial,
+                      kind = rep(kind, n), key = key, ic = FALSE, stringsAsFactors = FALSE)
+    # parameters that appear in the initial conditions are not "unused" when absent from the ODE
+    if ("ic" %in% names(x)) out$ic <- as.logical(x$ic) %in% TRUE
+    return(out)
   }
+
   serial <- trimws(as.character(unname(x)))
   label <- names(x)
   if (is.null(label) || length(label) != length(serial) || all(!nzchar(label))) {
@@ -97,19 +123,121 @@ ode_builder_named_vector_to_tokens <- function(x, kind) {
     display = label[keep],
     serial = serial[keep],
     kind = rep(kind, sum(keep)),
+    key = serial[keep],
+    ic = FALSE,
     stringsAsFactors = FALSE
   )
 }
 
+# Stable keys of the state rows (equations are stored per state key)
+ode_builder_state_keys <- function(x) {
+  if (is.null(x) || length(x) == 0 || NROW(x) == 0) return(character(0))
+  if (is.data.frame(x)) return(as.character(x$key %||% paste0("vars", seq_len(NROW(x)))))
+  as.character(unname(x))
+}
+
+#------------------------------------------------------------------------------#
+# Token resolution ---------------------------------------------------------------
+#------------------------------------------------------------------------------#
+# Tokens of state variables and parameters remember the stable `key` of the form #
+# row they were taken from. Before an equation is displayed, validated or        #
+# serialized, every such token is refreshed from the current catalog: its        #
+# positional serial (varsN / paramsN) and its display label follow the row, so   #
+# removing or renaming a row never silently changes the meaning of an equation.  #
+# A token whose row no longer exists is flagged as orphan (reported as an error).#
+#------------------------------------------------------------------------------#
+ode_builder_resolve_token <- function(token, catalog) {
+  token <- as.list(token)
+  kind <- token$kind %||% ""
+  key <- token$key %||% NULL
+  if (!(kind %in% c("state", "param")) || is.null(key) || !nzchar(key) || NROW(catalog) == 0) {
+    return(token)
+  }
+  hit <- catalog[catalog$kind == kind & catalog$key == key, , drop = FALSE]
+  if (NROW(hit) == 0) {
+    # legacy tokens (created before keys existed) carry their serial as key
+    hit <- catalog[catalog$kind == kind & catalog$serial == key, , drop = FALSE]
+  }
+  if (NROW(hit) == 0) {
+    token$orphan <- TRUE
+    # the stale positional serial could now belong to another row: neutralize it
+    token$serial <- paste0("missing_", key)
+    return(token)
+  }
+  token$orphan <- FALSE
+  token$serial <- hit$serial[[1]]
+  if (nzchar(hit$display[[1]])) token$display <- hit$display[[1]]
+  token
+}
+
+ode_builder_resolve_tokens <- function(tokens, catalog) {
+  if (length(tokens) == 0) return(list())
+  lapply(tokens, ode_builder_resolve_token, catalog = catalog)
+}
+
+#------------------------------------------------------------------------------#
+# Text -> tokens (used by the model library and by presets) ----------------------
+#------------------------------------------------------------------------------#
+# `text` is an expression written with internal names, e.g. "beta*S*I/N -       #
+# gamma*I". `lookup` is a data.frame with the columns name (internal name used   #
+# in the text), key (stable row key), kind ("state" / "param" / "tdp") and       #
+# display (label shown in the builder). Explicit '*' between two operands are   #
+# dropped because the builder multiplies adjacent operands implicitly (the      #
+# serialized code always contains the '*' again).                               #
+#------------------------------------------------------------------------------#
+ode_builder_tokenize_text <- function(text, lookup) {
+  text <- trimws(as.character(text %||% ""))
+  if (!nzchar(text)) return(list())
+  functions <- c("exp", "log", "sqrt", "sin", "cos")
+  pattern <- "\\s*([A-Za-z_][A-Za-z0-9_]*\\s*\\(|[A-Za-z_][A-Za-z0-9_]*|[0-9]+\\.?[0-9]*(?:[eE][+-]?[0-9]+)?|\\.[0-9]+(?:[eE][+-]?[0-9]+)?|\\^|\\*|/|\\+|-|\\(|\\))"
+  pos <- 1L
+  tokens <- list()
+  while (pos <= nchar(text)) {
+    rest <- substr(text, pos, nchar(text))
+    if (!nzchar(trimws(rest))) break
+    m <- regmatches(rest, regexpr(paste0("^", pattern), rest, perl = TRUE))
+    if (length(m) == 0 || !nzchar(m)) {
+      stop(sprintf("Cannot read the expression near '%s'", substr(rest, 1, 12)))
+    }
+    piece <- trimws(m)
+    pos <- pos + nchar(m)
+    if (grepl("\\($", piece) && nchar(piece) > 1) {
+      fname <- trimws(sub("\\s*\\($", "", piece))
+      if (!(fname %in% functions)) stop(sprintf("Unknown function '%s' in '%s'", fname, text))
+      tokens[[length(tokens) + 1]] <- list(display = paste0(fname, "("), serial = paste0(fname, "("), kind = "operator")
+    } else if (grepl("^[0-9.]", piece)) {
+      tokens[[length(tokens) + 1]] <- list(display = piece, serial = piece, kind = "number")
+    } else if (piece %in% c("+", "-", "/", "^", "(", ")")) {
+      tokens[[length(tokens) + 1]] <- list(display = piece, serial = piece, kind = "operator")
+    } else if (identical(piece, "*")) {
+      # implicit multiplication: only keep '*' when it is needed for parsing
+      next
+    } else if (identical(piece, "t")) {
+      tokens[[length(tokens) + 1]] <- list(display = "t", serial = "t", kind = "time")
+    } else {
+      hit <- lookup[lookup$name == piece, , drop = FALSE]
+      if (NROW(hit) == 0) stop(sprintf("Unknown symbol '%s' in '%s'", piece, text))
+      tokens[[length(tokens) + 1]] <- list(display = as.character(hit$display[[1]]),
+                                           serial = if ("serial" %in% names(hit)) as.character(hit$serial[[1]]) else "",
+                                           kind = as.character(hit$kind[[1]]),
+                                           key = as.character(hit$key[[1]]))
+    }
+  }
+  tokens
+}
+
 ode_builder_operator_tokens <- function() {
+  serial <- c("+", "-", "*", "/", "(", ")", "^",
+              "exp(", "log(", "sqrt(", "sin(", "cos(", "t")
   data.frame(
     label = c("+", "-", "*", "/", "(", ")", "^",
               "exp(", "log(", "sqrt(", "sin(", "cos(", "t"),
     display = c("+", "-", "\u00d7", "/", "(", ")", "^",
                 "exp(", "log(", "sqrt(", "sin(", "cos(", "t"),
-    serial = c("+", "-", "*", "/", "(", ")", "^",
-               "exp(", "log(", "sqrt(", "sin(", "cos(", "t"),
+    serial = serial,
     kind = c(rep("operator", 12), "time"),
+    key = serial,
+    ic = FALSE,
     stringsAsFactors = FALSE
   )
 }
@@ -120,13 +248,16 @@ ode_builder_digit_tokens <- function() {
     display = c(as.character(0:9), "."),
     serial = c(as.character(0:9), "."),
     kind = rep("number_digit", 11),
+    key = c(as.character(0:9), "."),
+    ic = FALSE,
     stringsAsFactors = FALSE
   )
 }
 
 ode_builder_empty_catalog <- function() {
   data.frame(label = character(0), display = character(0),
-             serial = character(0), kind = character(0))
+             serial = character(0), kind = character(0), key = character(0),
+             ic = logical(0), stringsAsFactors = FALSE)
 }
 
 ode_builder_tdp_tokens <- function(tdp_value) {
@@ -171,6 +302,7 @@ ode_builder_token_button <- function(ns, token, class_extra = "") {
     "{display:", ode_builder_json(token$display[[1]] %||% ""),
     ",serial:", ode_builder_json(token$serial[[1]] %||% ""),
     ",kind:", ode_builder_json(token$kind[[1]] %||% "operator"),
+    ",key:", ode_builder_json(if (!is.null(token$key)) token$key[[1]] else (token$serial[[1]] %||% "")),
     ",nonce:Math.random()}"
   )
   onclick <- sprintf(
@@ -264,7 +396,7 @@ ode_builder_set_tokens <- function(token_state, row, tokens) {
 ode_builder_token_display <- function(token, catalog) {
   if (NROW(catalog) > 0 && token$kind %in% c("state", "param", "tdp", "operator", "time")) {
     hit <- catalog[catalog$serial == token$serial & catalog$kind == token$kind, , drop = FALSE]
-    if (NROW(hit) > 0) return(hit$display[[1]])
+    if (NROW(hit) > 0 && nzchar(hit$display[[1]])) return(hit$display[[1]])
   }
   token$display %||% token$serial %||% ""
 }
@@ -283,7 +415,7 @@ ode_builder_token_latex <- function(token, catalog) {
   if (identical(kind, "operator")) {
     return(switch(
       serial,
-      "*" = "\\,",
+      "*" = "\\cdot",
       "exp(" = "\\exp(",
       "log(" = "\\log(",
       "sqrt(" = "\\operatorname{sqrt}(",
@@ -292,25 +424,237 @@ ode_builder_token_latex <- function(token, catalog) {
       serial
     ))
   }
+  if (identical(kind, "number")) return(ode_builder_number_latex(serial))
 
   ode_builder_clean_math_label(label, serial)
 }
 
+# Plain inline rendering (fallback while an expression is still incomplete)
 ode_builder_tokens_to_latex <- function(tokens, catalog) {
   if (length(tokens) == 0) return("")
   paste(vapply(tokens, ode_builder_token_latex, character(1), catalog = catalog),
         collapse = " ")
 }
 
-ode_builder_expression_math <- function(tokens, catalog) {
-  latex <- ode_builder_tokens_to_latex(tokens, catalog)
-  if (!nzchar(latex)) return("")
-  ode_builder_math_inline(latex, "ode-builder-expression-math")
+#------------------------------------------------------------------------------#
+# Implicit multiplication ---------------------------------------------------------
+#------------------------------------------------------------------------------#
+# Two operands written next to each other (e.g. beta S I) are multiplied, as in #
+# ordinary mathematical notation. The '*' key still works. The serialized code  #
+# always contains explicit '*' so that Stan / R evaluate exactly what is shown. #
+#------------------------------------------------------------------------------#
+
+ode_builder_is_operand_end <- function(tok) {
+  kind <- tok$kind %||% ""
+  kind %in% c("state", "param", "tdp", "time", "number") ||
+    (identical(kind, "operator") && identical(tok$serial %||% "", ")"))
 }
 
+ode_builder_is_operand_start <- function(tok) {
+  kind <- tok$kind %||% ""
+  serial <- tok$serial %||% ""
+  kind %in% c("state", "param", "tdp", "time", "number") ||
+    (identical(kind, "operator") && (identical(serial, "(") || grepl("\\($", serial)))
+}
+
+# Insert the implicit '*' tokens
+ode_builder_normalize_tokens <- function(tokens) {
+  out <- list()
+  for (tok in tokens) {
+    if (length(out) > 0 && ode_builder_is_operand_end(out[[length(out)]]) && ode_builder_is_operand_start(tok)) {
+      out[[length(out) + 1]] <- list(display = "*", serial = "*", kind = "operator", implicit = TRUE)
+    }
+    out[[length(out) + 1]] <- tok
+  }
+  out
+}
+
+# Numbers are written as real literals (2 -> 2.0) so that Stan never performs an
+# integer division such as 1 / 2 = 0.
+ode_builder_number_serial <- function(x) {
+  x <- as.character(x)
+  if (grepl("^[0-9]+$", x)) paste0(x, ".0") else if (grepl("^\\.", x)) paste0("0", x) else x
+}
+
+ode_builder_number_latex <- function(x) {
+  x <- as.character(x)
+  x <- sub("^\\.", "0.", x)
+  x <- sub("\\.$", "", x)
+  x
+}
+
+# Code string with explicit multiplication (used for the options file / Stan)
 ode_builder_tokens_to_serial <- function(tokens) {
   if (length(tokens) == 0) return("")
-  paste(vapply(tokens, function(t) t$serial %||% "", character(1)), collapse = " ")
+  toks <- ode_builder_normalize_tokens(tokens)
+  paste(vapply(toks, function(t) {
+    if (identical(t$kind %||% "", "number")) ode_builder_number_serial(t$serial %||% "") else t$serial %||% ""
+  }, character(1)), collapse = " ")
+}
+
+#------------------------------------------------------------------------------#
+# Expression parser (for the mathematical rendering and friendly messages) ------
+#------------------------------------------------------------------------------#
+# Precedence, from low to high: + -  |  * / (and implicit multiplication,       #
+# left-associative)  |  unary -  |  ^ (right-associative). This is exactly the  #
+# precedence used by Stan and R for the serialized code, so what is displayed   #
+# is what is computed.                                                          #
+#------------------------------------------------------------------------------#
+
+ode_builder_parse_tokens <- function(tokens) {
+  toks <- ode_builder_normalize_tokens(tokens)
+  n <- length(toks)
+  pos <- 1L
+
+  fail <- function(msg) stop(structure(list(message = msg, call = NULL),
+                                       class = c("ode_parse_error", "error", "condition")))
+  peek <- function() if (pos <= n) toks[[pos]] else NULL
+  is_op <- function(tok, s) !is.null(tok) && identical(tok$kind %||% "", "operator") && identical(tok$serial %||% "", s)
+  tok_label <- function(tok) tok$display %||% tok$serial %||% "?"
+
+  parse_expr <- function() {
+    node <- parse_term()
+    repeat {
+      tok <- peek()
+      if (is_op(tok, "+") || is_op(tok, "-")) {
+        pos <<- pos + 1L
+        rhs <- parse_term()
+        node <- list(type = "bin", op = tok$serial, l = node, r = rhs)
+      } else break
+    }
+    node
+  }
+  parse_term <- function() {
+    node <- parse_unary()
+    repeat {
+      tok <- peek()
+      if (is_op(tok, "*") || is_op(tok, "/")) {
+        pos <<- pos + 1L
+        rhs <- parse_unary()
+        node <- list(type = "bin", op = tok$serial, l = node, r = rhs, implicit = isTRUE(tok$implicit))
+      } else break
+    }
+    node
+  }
+  parse_unary <- function() {
+    tok <- peek()
+    if (is_op(tok, "-") || is_op(tok, "+")) {
+      pos <<- pos + 1L
+      operand <- parse_unary()
+      return(list(type = "unary", op = tok$serial, e = operand))
+    }
+    parse_power()
+  }
+  parse_power <- function() {
+    base <- parse_atom()
+    tok <- peek()
+    if (is_op(tok, "^")) {
+      pos <<- pos + 1L
+      ex <- parse_unary()
+      return(list(type = "pow", base = base, exp = ex))
+    }
+    base
+  }
+  parse_atom <- function() {
+    tok <- peek()
+    if (is.null(tok)) fail("the expression is incomplete (an operand is missing at the end)")
+    kind <- tok$kind %||% ""
+    serial <- tok$serial %||% ""
+    if (kind %in% c("state", "param", "tdp", "time")) { pos <<- pos + 1L; return(list(type = "sym", token = tok)) }
+    if (identical(kind, "number")) { pos <<- pos + 1L; return(list(type = "num", value = serial)) }
+    if (is_op(tok, "(")) {
+      pos <<- pos + 1L
+      inner <- parse_expr()
+      if (!is_op(peek(), ")")) fail("a closing parenthesis ')' is missing")
+      pos <<- pos + 1L
+      return(list(type = "paren", e = inner))
+    }
+    if (identical(kind, "operator") && nchar(serial) > 1 && grepl("\\($", serial)) {
+      fname <- sub("\\($", "", serial)
+      pos <<- pos + 1L
+      inner <- parse_expr()
+      if (!is_op(peek(), ")")) fail(sprintf("the closing parenthesis of %s( ) is missing", fname))
+      pos <<- pos + 1L
+      return(list(type = "func", name = fname, e = inner))
+    }
+    if (is_op(tok, ")")) fail("there is a ')' without a matching '('")
+    fail(sprintf("'%s' cannot be used here (an operand is expected)", tok_label(tok)))
+  }
+
+  node <- parse_expr()
+  if (pos <= n) fail(sprintf("'%s' cannot follow a complete expression", tok_label(peek())))
+  node
+}
+
+ode_builder_symbol_latex <- function(token, catalog) {
+  label <- ode_builder_clean_math_label(ode_builder_token_display(token, catalog), token$serial %||% "")
+  # plain multi-letter names (e.g. Ih, tint) are set upright-ish so they read as one symbol
+  if (grepl("^[A-Za-z][A-Za-z0-9]+$", label) && !grepl("\\\\", label)) paste0("\\mathit{", label, "}") else label
+}
+
+# compact = TRUE writes fractions with a slash (a/b) and plain parentheses, for a
+# one-line rendering (model library cards); the default uses \frac and \left( \right).
+ode_builder_ast_latex <- function(node, catalog, compact = FALSE) {
+  rec <- function(x) ode_builder_ast_latex(x, catalog, compact = compact)
+  # Parentheses are redundant when a fraction bar, a radical or a superscript
+  # already groups the expression.
+  grouped <- function(x) if (identical(x$type, "paren")) rec(x$e) else rec(x)
+  lp <- if (compact) "(" else "\\left("
+  rp <- if (compact) ")" else "\\right)"
+  switch(node$type,
+    sym   = ode_builder_symbol_latex(node$token, catalog),
+    num   = ode_builder_number_latex(node$value),
+    paren = paste0(lp, rec(node$e), rp),
+    func  = switch(node$name,
+                   sqrt = paste0("\\sqrt{", grouped(node$e), "}"),
+                   exp  = paste0("\\exp", lp, rec(node$e), rp),
+                   log  = paste0("\\log", lp, rec(node$e), rp),
+                   sin  = paste0("\\sin", lp, rec(node$e), rp),
+                   cos  = paste0("\\cos", lp, rec(node$e), rp),
+                   paste0("\\operatorname{", node$name, "}", lp, rec(node$e), rp)),
+    unary = paste0(if (identical(node$op, "-")) "-" else "+", rec(node$e)),
+    pow   = paste0(rec(node$base), "^{", grouped(node$exp), "}"),
+    bin   = {
+      l <- node$l; r <- node$r
+      if (node$op %in% c("+", "-")) {
+        rhs <- if (identical(r$type, "unary")) paste0(lp, rec(r), rp) else rec(r)
+        paste0(rec(l), " ", node$op, " ", rhs)
+      } else if (identical(node$op, "/") && compact) {
+        # slash form: parentheses around a sum in the numerator and around any
+        # composite denominator, so that the reading order is unambiguous
+        is_sum <- function(x) identical(x$type, "bin") && x$op %in% c("+", "-")
+        num <- if (is_sum(l)) paste0("(", rec(l), ")") else grouped(l)
+        den <- if (identical(r$type, "bin") || identical(r$type, "unary")) paste0("(", grouped(r), ")") else grouped(r)
+        paste0(num, "/", den)
+      } else if (identical(node$op, "/")) {
+        num <- grouped(l)
+        # a leading unary minus of the numerator is written in front of the fraction
+        if (startsWith(num, "-")) paste0("-\\frac{", trimws(substring(num, 2)), "}{", grouped(r), "}") else
+          paste0("\\frac{", num, "}{", grouped(r), "}")
+      } else {
+        rhs <- if (identical(r$type, "unary")) paste0("\\left(", rec(r), "\\right)") else rec(r)
+        sep <- if (identical(r$type, "num") || identical(l$type, "num")) " \\cdot " else " \\, "
+        paste0(rec(l), sep, rhs)
+      }
+    },
+    "?"
+  )
+}
+
+# Mathematical rendering of a token sequence (fraction bars, exponents, ...);
+# falls back to the plain inline rendering while the expression is incomplete.
+ode_builder_tokens_to_math_latex <- function(tokens, catalog, compact = FALSE) {
+  if (length(tokens) == 0) return(list(latex = "", structured = FALSE))
+  ast <- tryCatch(ode_builder_parse_tokens(tokens), ode_parse_error = function(e) NULL, error = function(e) NULL)
+  if (is.null(ast)) return(list(latex = ode_builder_tokens_to_latex(tokens, catalog), structured = FALSE))
+  list(latex = ode_builder_ast_latex(ast, catalog, compact = compact), structured = TRUE)
+}
+
+ode_builder_expression_math <- function(tokens, catalog) {
+  rendered <- ode_builder_tokens_to_math_latex(tokens, catalog)
+  if (!nzchar(rendered$latex)) return("")
+  ode_builder_math_inline(paste0("\\displaystyle ", rendered$latex),
+                          if (rendered$structured) "ode-builder-expression-math" else "ode-builder-expression-math ode-builder-expression-partial")
 }
 
 ode_builder_append_token <- function(tokens, token) {
@@ -376,7 +720,7 @@ ode_builder_rhs_has_negative_term <- function(tokens) {
     if (!identical(serials[[i]], "-")) next
     if (i == 1) next
     prev <- serials[[i - 1]]
-    if (prev %in% c("(", "+", "-", "*", "/", "^")) next
+    if (prev %in% c("(", "+", "-", "*", "/", "^") || grepl("\\($", prev)) next
     return(TRUE)
   }
   FALSE
@@ -401,6 +745,16 @@ ode_builder_validate_equation <- function(tokens, catalog, n_states, n_params,
   for (token in tokens) {
     kind <- token$kind %||% ""
     serial <- token$serial %||% ""
+
+    if (isTRUE(token$orphan)) {
+      return(list(
+        level = "error",
+        blocking = TRUE,
+        message = sprintf("'%s' no longer exists (the %s was removed): delete it from the equation (Backspace / Clear).",
+                          token$display %||% serial,
+                          if (identical(kind, "state")) "state variable" else "parameter")
+      ))
+    }
 
     if (identical(kind, "state")) {
       idx <- ode_builder_serial_index(serial, "vars")
@@ -443,6 +797,17 @@ ode_builder_validate_equation <- function(tokens, catalog, n_states, n_params,
         ))
       }
     }
+  }
+
+  structure_check <- tryCatch({ ode_builder_parse_tokens(tokens); TRUE },
+                              ode_parse_error = function(e) conditionMessage(e),
+                              error = function(e) conditionMessage(e))
+  if (!isTRUE(structure_check)) {
+    return(list(
+      level = "error",
+      blocking = TRUE,
+      message = paste0("Incomplete expression: ", structure_check, ".")
+    ))
   }
 
   serial <- ode_builder_tokens_to_serial(tokens)
@@ -495,10 +860,17 @@ ode_builder_model_checks <- function(n, tokens, statuses, states, params,
   tdp_labels <- stats::setNames(as.character(tdp_tokens$display %||% character(0)), tdp_names)
 
   if (length(state_labels) == n && n > 0) {
-    add_check("ok", sprintf("%d equations for %d state variables", n, length(state_labels)))
+    add_check("ok", sprintf("%d equation%s for %d state variable%s", n, if (n == 1) "" else "s",
+                            length(state_labels), if (n == 1) "" else "s"))
   } else {
     add_check("error", sprintf("Expected %d state variables, but %d are currently available",
                                n, length(state_labels)))
+  }
+  if (any(!nzchar(trimws(state_labels)))) {
+    add_check("warning", "Some state variables have no name yet (step 4)")
+  }
+  if (any(!nzchar(trimws(param_labels)))) {
+    add_check("warning", "Some parameters have no name yet (step 5)")
   }
 
   blocking <- vapply(statuses, function(x) isTRUE(x$blocking), logical(1))
@@ -577,6 +949,7 @@ ode_builder_model_checks <- function(n, tokens, statuses, states, params,
 
   if (NROW(params) > 0) {
     all_params <- as.character(params$serial)
+    if ("ic" %in% names(params)) all_params <- all_params[!(params$ic %in% TRUE)]
     unused <- setdiff(all_params, used_params)
     if (length(unused) > 0) {
       add_check("info", sprintf("%d scalar parameter%s appear%s unused in the ODE",
@@ -731,7 +1104,11 @@ odeBuilderUI <- function(id) {
         pointer-events: none;
       }
       .ode-builder-root .ode-builder-expression-math {
-        font-size: 17px;
+        font-size: 18px;
+        line-height: 1.6;
+      }
+      .ode-builder-root .ode-builder-expression-partial {
+        color: #777;
       }
       .ode-builder-root .ode-status-icon {
         display: inline-block;
@@ -817,14 +1194,6 @@ odeBuilderUI <- function(id) {
     div(
       id = ns("root"),
       class = "ode-builder-root",
-      div(
-        class = "ode-builder-help",
-        helpText(
-          "Build each ODE by selecting an equation card, then clicking tokens ",
-          "from the shared keypad. The app stores exact internal tokens behind ",
-          "the scenes, so ODE equations no longer depend on LaTeX parsing."
-        )
-      ),
       uiOutput(ns("container"))
     )
   )
@@ -834,14 +1203,21 @@ odeBuilderUI <- function(id) {
 # Server -----------------------------------------------------------------------
 #------------------------------------------------------------------------------#
 
-odeBuilderServer <- function(id, n_equations, states_reactive,
+odeBuilderServer <- function(id, n_equations = NULL, states_reactive,
                              params_reactive, tdp_reactive,
-                             fitting_diff_reactive = reactive(NULL)) {
+                             fitting_diff_reactive = reactive(NULL),
+                             preset_reactive = reactive(NULL)) {
   moduleServer(id, function(input, output, session) {
     ns <- session$ns
     token_state <- reactiveValues()
     active_equation <- reactiveVal(1L)
     last_error <- reactiveVal(NULL)
+
+    # Stable keys of the state rows: one equation per key
+    state_keys <- reactive({ ode_builder_state_keys(states_reactive()) })
+
+    # Number of equations (defaults to the number of state rows)
+    n_equations <- if (is.null(n_equations)) reactive({ length(state_keys()) }) else n_equations
 
     current_catalog <- reactive({
       state_tokens <- ode_builder_named_vector_to_tokens(states_reactive(), "state")
@@ -856,11 +1232,36 @@ odeBuilderServer <- function(id, n_equations, states_reactive,
       )
     })
 
+    # Key of the i-th equation (falls back to the position for legacy callers)
+    key_at <- function(i, keys = state_keys()) {
+      i <- as.integer(i)
+      if (!is.na(i) && i >= 1 && i <= length(keys)) keys[[i]] else as.character(i)
+    }
+
+    # Tokens of every equation, refreshed from the current catalog (see
+    # ode_builder_resolve_token): serials follow the rows, orphans are flagged.
     current_tokens <- reactive({
       n <- n_equations()
       if (is.null(n) || is.na(n) || n < 1) return(list())
-      lapply(seq_len(as.integer(n)), function(i) ode_builder_get_tokens(token_state, i))
+      catalog <- current_catalog()
+      keys <- state_keys()
+      lapply(seq_len(as.integer(n)), function(i) {
+        ode_builder_resolve_tokens(ode_builder_get_tokens(token_state, key_at(i, keys)), catalog)
+      })
     })
+
+    # Presets (model library): list(nonce = <any>, equations = list(<state key> = <tokens>))
+    observeEvent(preset_reactive(), {
+      preset <- preset_reactive()
+      if (is.null(preset) || is.null(preset$equations)) return(NULL)
+      # drop the equations of rows that no longer exist
+      for (nm in names(reactiveValuesToList(token_state))) token_state[[nm]] <- NULL
+      for (k in names(preset$equations)) {
+        ode_builder_set_tokens(token_state, k, preset$equations[[k]])
+      }
+      active_equation(1L)
+      last_error(NULL)
+    }, ignoreNULL = TRUE, ignoreInit = TRUE)
 
     equation_statuses <- reactive({
       n <- n_equations()
@@ -920,10 +1321,10 @@ odeBuilderServer <- function(id, n_equations, states_reactive,
       }
     })
 
-    build_card_ui <- function(i, catalog, statuses, active) {
+    build_card_ui <- function(i, catalog, statuses, active, tokens_all) {
       states <- catalog[catalog$kind == "state", , drop = FALSE]
-      state_label <- if (NROW(states) >= i) states$display[[i]] else paste0("var", i)
-      tokens <- ode_builder_get_tokens(token_state, i)
+      state_label <- if (NROW(states) >= i && nzchar(states$display[[i]])) states$display[[i]] else paste0("var", i)
+      tokens <- if (length(tokens_all) >= i) tokens_all[[i]] else list()
       display <- ode_builder_tokens_to_display(tokens, catalog)
       status <- statuses[[i]]
       meta <- ode_builder_status_meta(status$level)
@@ -940,7 +1341,7 @@ odeBuilderServer <- function(id, n_equations, states_reactive,
             meta$icon
           ),
           tags$span(class = "ode-builder-derivative",
-                    ode_builder_math_inline(paste0("d", state_label, "/dt ="))),
+                    ode_builder_math_inline(paste0("\\displaystyle \\frac{d", state_label, "}{dt} ="))),
           if (identical(as.integer(active), as.integer(i))) {
             tags$span(class = "label label-primary", "Active")
           } else {
@@ -964,11 +1365,13 @@ odeBuilderServer <- function(id, n_equations, states_reactive,
 
     build_keypad_ui <- function(catalog, active) {
       states <- catalog[catalog$kind == "state", , drop = FALSE]
+      states <- states[nzchar(states$display), , drop = FALSE]
       state_buttons <- lapply(seq_len(NROW(states)), function(j) {
         ode_builder_token_button(ns, states[j, ], "ode-token-state")
       })
 
       params <- catalog[catalog$kind == "param", , drop = FALSE]
+      params <- params[nzchar(params$display), , drop = FALSE]
       param_buttons <- lapply(seq_len(NROW(params)), function(j) {
         ode_builder_token_button(ns, params[j, ], "ode-token-param")
       })
@@ -990,15 +1393,19 @@ odeBuilderServer <- function(id, n_equations, states_reactive,
 
       active_label <- {
         state_rows <- catalog[catalog$kind == "state", , drop = FALSE]
-        if (NROW(state_rows) >= active) state_rows$display[[active]] else paste0("Equation ", active)
+        if (NROW(state_rows) >= active && nzchar(state_rows$display[[active]])) state_rows$display[[active]] else paste0("var", active)
       }
 
       div(
         class = "ode-builder-keypad",
-        div(class = "ode-builder-keypad-title", "Token keypad"),
+        div(class = "ode-builder-keypad-title", "Token keypad ",
+            tags$i(class = "glyphicon glyphicon-info-sign", style = "color:#555; font-size: 12px;",
+                   title = paste("Select an equation card, then click the tokens. Symbols placed next to each other are multiplied",
+                                 "(\u03b2 S I means \u03b2\u00b7S\u00b7I; the \u00d7 key is optional). Division is displayed as a fraction and",
+                                 "powers as superscripts; use parentheses to change the grouping (a / b c is (a / b)\u00b7c, a / (b c) puts both in the denominator)."))),
         div(class = "ode-builder-active-note",
             "Inserting into ",
-            ode_builder_math_inline(paste0("d", active_label, "/dt")),
+            ode_builder_math_inline(paste0("\\frac{d", active_label, "}{dt}")),
             "."),
         div(
           ode_builder_edit_button(ns, "backspace", "Backspace"),
@@ -1007,12 +1414,12 @@ odeBuilderServer <- function(id, n_equations, states_reactive,
         ode_builder_button_group(
           "State variables",
           state_buttons,
-          "State-variable buttons appear after Variable Specification is complete."
+          "Add and name the state variables in step 4 to get their buttons here."
         ),
         ode_builder_button_group(
           "Scalar parameters",
           param_buttons,
-          "Parameter buttons appear after Parameter Specification is complete."
+          "Add and name the parameters in step 5 to get their buttons here."
         ),
         ode_builder_button_group(
           "Time-dependent parameters",
@@ -1054,14 +1461,14 @@ odeBuilderServer <- function(id, n_equations, states_reactive,
       )
     }
 
-    build_developer_preview_ui <- function(n, catalog) {
-      tokens <- current_tokens()
+    build_developer_preview_ui <- function(n, catalog, tokens) {
       rhs <- vapply(tokens, ode_builder_tokens_to_serial, character(1))
       display <- vapply(tokens, ode_builder_tokens_to_display, character(1), catalog = catalog)
       lines <- paste0("diff_var", seq_len(n), " = ", rhs)
       pretty <- paste0("d", {
         states <- catalog[catalog$kind == "state", , drop = FALSE]
         labels <- if (NROW(states) >= n) states$display[seq_len(n)] else paste0("var", seq_len(n))
+        labels[!nzchar(labels)] <- paste0("var", seq_len(n))[!nzchar(labels)]
         labels
       }, "/dt = ", ifelse(nzchar(display), display, "(empty)"))
 
@@ -1076,13 +1483,14 @@ odeBuilderServer <- function(id, n_equations, states_reactive,
     output$container <- renderUI({
       n <- n_equations()
       if (is.null(n) || is.na(n) || n < 1) {
-        return(helpText("Set '# State Variables' to add ODE rows."))
+        return(helpText("Add state variables in step 4 (or choose a model from the Model library) to get one equation per state variable here."))
       }
       n <- as.integer(n)
       catalog <- current_catalog()
       statuses <- equation_statuses()
       active <- active_equation()
       err <- last_error()
+      tokens_all <- current_tokens()
 
       fluidRow(
         class = "ode-builder-layout",
@@ -1094,9 +1502,10 @@ odeBuilderServer <- function(id, n_equations, states_reactive,
           do.call(tagList, lapply(seq_len(n), build_card_ui,
                                   catalog = catalog,
                                   statuses = statuses,
-                                  active = active)),
+                                  active = active,
+                                  tokens_all = tokens_all)),
           build_status_panel_ui(model_checks()),
-          build_developer_preview_ui(n, catalog)
+          build_developer_preview_ui(n, catalog, tokens_all)
         ),
         column(
           5,
@@ -1124,8 +1533,10 @@ odeBuilderServer <- function(id, n_equations, states_reactive,
         serial = click$serial %||% "",
         kind = click$kind %||% "operator"
       )
-      tokens <- ode_builder_get_tokens(token_state, row)
-      ode_builder_set_tokens(token_state, row, ode_builder_append_token(tokens, token))
+      if (token$kind %in% c("state", "param")) token$key <- click$key %||% token$serial
+      key <- key_at(row)
+      tokens <- ode_builder_get_tokens(token_state, key)
+      ode_builder_set_tokens(token_state, key, ode_builder_append_token(tokens, token))
       last_error(NULL)
     })
 
@@ -1139,9 +1550,10 @@ odeBuilderServer <- function(id, n_equations, states_reactive,
         last_error("Please enter a valid number, e.g. 0.5, 12, or 1e-3.")
         return(NULL)
       }
-      tokens <- ode_builder_get_tokens(token_state, row)
+      key <- key_at(row)
+      tokens <- ode_builder_get_tokens(token_state, key)
       token <- list(display = value, serial = value, kind = "number")
-      ode_builder_set_tokens(token_state, row, c(tokens, list(token)))
+      ode_builder_set_tokens(token_state, key, c(tokens, list(token)))
       last_error(NULL)
     })
 
@@ -1152,13 +1564,14 @@ odeBuilderServer <- function(id, n_equations, states_reactive,
       action <- as.character(click$action %||% "")
       if (is.na(row) || row < 1 || is.na(n) || row > n) return(NULL)
       active_equation(row)
-      tokens <- ode_builder_get_tokens(token_state, row)
+      key <- key_at(row)
+      tokens <- ode_builder_get_tokens(token_state, key)
       if (identical(action, "clear")) {
         tokens <- list()
       } else if (identical(action, "backspace") && length(tokens) > 0) {
         tokens <- tokens[-length(tokens)]
       }
-      ode_builder_set_tokens(token_state, row, tokens)
+      ode_builder_set_tokens(token_state, key, tokens)
       last_error(NULL)
     })
 

@@ -1,10 +1,8 @@
-generate_stan_file <- function(optionsFile) {
-  
+generate_stan_file <- function() {
   # Creating the stan file
   library(checkmate)
   source("diff.R")
   source("ode_rhs.R")
-  source(optionsFile)
   
   ############################################################################
   # Define the is.wholenumber function
@@ -71,6 +69,13 @@ generate_stan_file <- function(optionsFile) {
   
   ##############################################################################
   
+  # Check if the file exists before removing
+  if (file.exists(stan_file)) {
+    file.remove(stan_file)
+    cat(paste("Removed file:", stan_file, "\n"))
+  }
+  ##############################################################################
+  
   prior_assignments <- ""
   for (i in seq_along(params)) {
     prior_name <- paste0("params", i, "_prior")
@@ -81,6 +86,34 @@ generate_stan_file <- function(optionsFile) {
                                   prior_value, ";\n")
     }
   }
+  ##############################################################################
+  # Function: Find parameters in a time-dependent parameter
+  extract_used_params <- function(template) {
+    matches <- gregexpr("params[0-9]+", template)[[1]]
+    if (matches[1] == -1) return(character(0))
+    used <- regmatches(template, gregexpr("params[0-9]+", template))[[1]]
+    unique(used)
+  }
+  
+  # Function: Map to real parameter names
+  get_used_param_names <- function(used_placeholders, all_param_names) {
+    indices <- as.integer(sub("params", "", used_placeholders))
+    all_param_names[indices]
+  }
+  
+  # Function: Substitute parameters with their real name in the time-dep
+  replace_placeholders <- function(template, used_placeholders, param_names) {
+    for (i in seq_along(used_placeholders)) {
+      template <- gsub(used_placeholders[i], param_names[i], template, fixed = TRUE)
+    }
+    template
+  }
+  
+  expand_time_dependent_calls <- function(ode_code, fname, used_param_names) {
+    expanded_call <- paste0(fname, "(t, ", paste(used_param_names, collapse = ", "), ")")
+    gsub(fname, expanded_call, ode_code, fixed = TRUE)
+  }
+  
   ##############################################################################
   fitting <- vector("list", length(fitting_index))  # Initialize an empty list to store the fitting results
   
@@ -96,9 +129,23 @@ generate_stan_file <- function(optionsFile) {
       fitting[[j]] <- vars[fitting_index[j]]
     }
     
-    # Now, substitute variables in fitting
+    # Now, substitute variables in fitting. When the initial conditions are
+    # expressions (vars.init == 0) the ODE is integrated from zero and the state
+    # is y + init, so the fitted quantity must add the initial condition back
+    # (previously only the deviation y[t,i] was used, which is wrong whenever a
+    # fitted expression involves a state with a non-zero initial value).
     for (i in seq_along(vars)) {
-      fitting[[j]] <- gsub(paste0("\\b", vars[i], "\\b"), paste0("y[t,", i, "]"), fitting[[j]])
+      state_expr <- if (vars.init == 0) paste0("(y[t,", i, "] + init_ic[", i, "])") else paste0("y[t,", i, "]")
+      fitting[[j]] <- gsub(paste0("\\b", vars[i], "\\b"), state_expr, fitting[[j]])
+    }
+    # Replace time_dependent_paramX with correct form
+    for (td_name in names(time_dependent_templates)) {
+      if (grepl(td_name, fitting[[j]], fixed = TRUE)) {
+        template <- time_dependent_templates[[td_name]]
+        used_placeholders <- extract_used_params(template)
+        used_param_names <- get_used_param_names(used_placeholders, params)
+        fitting[[j]] <- expand_time_dependent_calls(fitting[[j]], td_name, used_param_names)
+      }
     }
   }
   
@@ -128,7 +175,7 @@ generate_stan_file <- function(optionsFile) {
   }
   if(vars.init == 0 )
   {
-    ode_function <- paste0(ode_function, "    real init[", length(vars), "] = {", paste(Ic, collapse = ", "), "};\n\n")
+    ode_function <- paste0(ode_function, "    array[", length(vars), "] real init = {", paste(Ic, collapse = ", "), "};\n\n")
     for (i in seq_along(vars)) {
       ode_function <- paste0(ode_function, "    real ", vars[i], " = y[", i, "]+init[", i, "];\n")
     }
@@ -136,21 +183,41 @@ generate_stan_file <- function(optionsFile) {
   
   ode_function <- paste0(ode_function,"\n", ode_system)
   
+ 
+  generated_functions <- c()
+  
+  for (fname in names(time_dependent_templates)) {
+    template <- time_dependent_templates[[fname]]
+    
+    used_placeholders <- extract_used_params(template)
+    used_param_names <- get_used_param_names(used_placeholders, params)
+    function_body <- replace_placeholders(template, used_placeholders, used_param_names)
+    
+    function_header <- paste0(
+      "real ", fname, "(real t, ",
+      paste(paste0("real ", used_param_names), collapse = ", "),
+      ") {"
+    )
+    full_function <- paste(function_header, function_body, "}", sep = "\n")
+    generated_functions <- c(generated_functions, full_function)
+    ode_function <- expand_time_dependent_calls(ode_function, fname, used_param_names)
+  }
+  
   # Generate the full Stan code
-  stan_code <- paste0("functions {", ode_function, "
-}
+  stan_code <- paste("functions {", paste(generated_functions, collapse = "\n\n"), ode_function, "}", sep = "\n\n")
+  stan_code <- paste0(stan_code,"
   
 data {
     int<lower=1> n_days;
     int<lower=0> nfst_days;")
     if (vars.init == 1)
     {
-    stan_code <- paste0(stan_code, "real y0[", length(vars), "];")
+    stan_code <- paste0(stan_code, "array[", length(vars), "] real y0;\n")
     }
-   stan_code <- paste0(stan_code, "real t0;\nreal ts[n_days + nfst_days];\n")
+   stan_code <- paste0(stan_code, "real t0;\narray[n_days + nfst_days] real ts;\n")
   
   for (i in 1:length(fitting_index)) {
-    stan_code <- paste0(stan_code, "int cases", i, "[n_days];\n")
+    stan_code <- paste0(stan_code, "array[n_days] int cases", i, ";\n")
   }
   for (i in seq_along(params_integer)) {
     stan_code <- paste0(stan_code,"    int ",params_integer[i],";\n")
@@ -163,234 +230,236 @@ data {
 transformed data {\n")
   if(length(params_real)!=0)
   {
-  stan_code <- paste0(stan_code, "    real x_r[",length(params_real),"] = ",params_real_set_formatted,";\n")
+  stan_code <- paste0(stan_code, "    array[", length(params_real), "] real x_r = ", params_real_set_formatted, ";\n")
   }
   else
   {
-    stan_code <- paste0(stan_code, "    real x_r[",length(params_real),"];\n")
+    stan_code <- paste0(stan_code, "    array[", length(params_real), "] real x_r;\n")
   }
   if(length(params_integer)!=0)
   {
-  stan_code <- paste0(stan_code, "    int x_i[",length(params_integer),"] = ",params_integer_set_formatted,";\n")
+  stan_code <- paste0(stan_code, "    array[", length(params_integer), "] int x_i = ", params_integer_set_formatted, ";\n")
   }
   else
   {
-    stan_code <- paste0(stan_code, "    int x_i[",length(params_integer),"];\n")
+    stan_code <- paste0(stan_code, "    array[", length(params_integer), "] int x_i;\n")
   }
   stan_code <- paste0(stan_code,"
   }")
   
   if (errstrc == 1) {
-    
-    # Find the indices of non-fixed parameters
     non_fixed_indices <- which(paramsfix == 0)
     
-    stan_code <- paste0(stan_code, "
-parameters {\n", 
-                        paste0("    real<", sapply(non_fixed_indices, function(i) {
-                          # Construct lower and upper bound names
-                          LB_name <- paste0("params", i, "_LB")
-                          UB_name <- paste0("params", i, "_UB")
-                          
-                          # Retrieve their values, with default of NA if not set
-                          LB_value <- ifelse(exists(LB_name), get(LB_name), NA)
-                          UB_value <- ifelse(exists(UB_name), get(UB_name), NA)
-                          
-                          # Construct the lower and upper bounds conditionally
-                          bounds <- c()
-                          if (!is.na(LB_value)) bounds <- c(bounds, paste0("lower=", LB_value))
-                          if (!is.na(UB_value)) bounds <- c(bounds, paste0("upper=", UB_value))
-                          
-                          # Join the bounds with commas if both are present
-                          paste(bounds, collapse = ", ")
-                        }), "> ", params[paramsfix == 0], ";\n", collapse = ""), 
+    stan_code <- paste0(stan_code, "parameters {\n",
+                        paste0(
+                          "    real<",
+                          sapply(non_fixed_indices, function(i) {
+                            LB_name <- paste0("params", i, "_LB")
+                            UB_name <- paste0("params", i, "_UB")
+                            LB_value <- ifelse(exists(LB_name), get(LB_name), NA)
+                            UB_value <- ifelse(exists(UB_name), get(UB_name), NA)
+                            bounds <- c()
+                            if (!is.na(LB_value)) bounds <- c(bounds, paste0("lower=", LB_value))
+                            if (!is.na(UB_value)) bounds <- c(bounds, paste0("upper=", UB_value))
+                            paste(bounds, collapse = ", ")
+                          }),
+                          "> ", params[paramsfix == 0], ";\n",
+                          collapse = ""
+                        ),
                         paste0("    real<lower=0> phi_inv", 1:length(fitting_index), ";\n", collapse = ""),
-                        "}
+                        "}\ntransformed parameters {\n  array[n_days + nfst_days, ", length(vars), "] real y;\n",
+                        if (vars.init == 0) paste0("  array[", length(vars), "] real init_ic = {", paste(Ic, collapse = ", "), "};\n") else "",
+                        paste0("  real phi", 1:length(fitting_index), " = 1.0 / phi_inv", 1:length(fitting_index), ";\n", collapse = ""),
+                        "  array[", length(params[paramsfix == 0]), "] real theta;\n",
+                        paste0(
+                          "  theta[", 1:length(params[paramsfix == 0]), "] = ", params[paramsfix == 0], ";\n",
+                          collapse = ""
+                        ))
     
-transformed parameters {
-    real y[n_days + nfst_days, ", length(vars), "];
-     ", paste0("    real phi", 1:length(fitting_index), " = 1. / phi_inv", 1:length(fitting_index), ";\n", collapse = ""),
-                        " 
-    {
-    real theta[", length(params[paramsfix == 0]), "];
-    ", paste0("    theta[", 1:length(params[paramsfix == 0]), "] = ", params[paramsfix == 0], ";\n", collapse = "")) 
     if (vars.init == 1) {
-      stan_code <- paste0(stan_code, "y = integrate_ode_rk45(ode, y0, t0, ts, theta, x_r, x_i);")
+      stan_code <- paste0(stan_code, "\n  y = integrate_ode_rk45(ode, y0, t0, ts, theta, x_r, x_i);\n")
+    } else if (vars.init == 0) {
+      stan_code <- paste0(stan_code, "\n  y = integrate_ode_rk45(ode, rep_array(0.0, ", length(vars), "), t0, ts, theta, x_r, x_i);\n")
     }
-    if (vars.init == 0) {
-      stan_code <- paste0(stan_code, "y = integrate_ode_rk45(ode, rep_array(0.0, ", length(vars), "), t0, ts, theta, x_r, x_i);")
+    
+    stan_code <- paste0(stan_code, "}\nmodel {\n", prior_assignments, "\n")
+    
+    stan_code <- paste0(stan_code,
+                        paste0("  phi_inv", 1:length(fitting_index), " ~ ",
+                               sapply(1:length(fitting_index), function(i) {
+                                 get(paste0("negbinerror", i, "_prior"))
+                               }), ";\n", collapse = ""),
+                        "\n  for (t in 1:n_days) {\n")
+    
+    stan_code <- paste0(stan_code,
+                        paste0("    cases", 1:length(fitting_index), "[t] ~ neg_binomial_2(fmax(1e-6, ", fitting[1:length(fitting_index)], "), phi", 1:length(fitting_index), ");\n", collapse = ""),
+                        "  }\n}\n\n")
+    
+    # Generated quantities: expected value (mu_cases), posterior-predictive draws
+    # (pred_cases) and the pointwise log-likelihood over the calibration window
+    # (log_lik) used for WAIC / LOO / DIC in run_analyzeResults.R.
+    stan_code <- paste0(stan_code, "generated quantities {\n",
+                        paste0("  array[n_days + nfst_days] real mu_cases", 1:length(fitting_index), ";\n", collapse = ""),
+                        paste0("  array[n_days + nfst_days] real pred_cases", 1:length(fitting_index), ";\n", collapse = ""),
+                        paste0("  array[n_days] real log_lik", 1:length(fitting_index), ";\n", collapse = ""),
+                        "  for (t in 1:(n_days + nfst_days)) {\n",
+                        paste0("    mu_cases", 1:length(fitting_index), "[t] = fmax(1e-6, ", fitting[1:length(fitting_index)], ");\n", collapse = ""),
+                        paste0("    pred_cases", 1:length(fitting_index), "[t] = neg_binomial_2_rng(mu_cases", 1:length(fitting_index), "[t], phi", 1:length(fitting_index), ");\n", collapse = ""),
+                        "  }\n",
+                        "  for (t in 1:n_days) {\n",
+                        paste0("    log_lik", 1:length(fitting_index), "[t] = neg_binomial_2_lpmf(cases", 1:length(fitting_index), "[t] | mu_cases", 1:length(fitting_index), "[t], phi", 1:length(fitting_index), ");\n", collapse = ""),
+                        "  }\n")
+    
+    if (length(composite_expressions) > 0) {
+      stan_code <- paste0(stan_code, "\n",
+                          paste0("  real ", names(composite_expressions), " = ",
+                                 sapply(composite_expressions, function(expr) expr), ";\n", collapse = ""))
     }
-    stan_code <- paste0(stan_code, "
- }
-}
     
-model {
-    ", prior_assignments, "  ")
-    stan_code <- paste0(stan_code, paste0("phi_inv", 1:length(fitting_index), " ~ ", 
-                                          sapply(1:length(fitting_index), function(i) {
-                                            get(paste0("negbinerror", i, "_prior"))
-                                          }), ";\n", collapse = ""), 
-                        "  
-  for (t in 1:n_days) {\n")
-    
-    stan_code <- paste0(stan_code, paste0("    cases", 1:length(fitting_index), "[t] ~ neg_binomial_2(fmax(1e-6, ", fitting[1:length(fitting_index)], "), phi", 1:length(fitting_index), ");\n", collapse = ""), 
-                        "  }
-}
-    
-generated quantities {\n")
-    
-    stan_code <- paste0(stan_code, paste0("    real pred_cases", 1:length(fitting_index), "[n_days + nfst_days];\n", collapse = ""),
-                        "    for (t in 1:n_days + nfst_days) {\n")
-    
-    stan_code <- paste0(stan_code, paste0("        pred_cases", 1:length(fitting_index), "[t] = neg_binomial_2_rng(fmax(1e-6, ", fitting[1:length(fitting_index)], "), phi", 1:length(fitting_index), ");\n", collapse = ""),
-                        "    }
-")
-    
-if (length(composite_expressions) > 0) {
-stan_code <- paste0(stan_code,"
-    // Composite quantities
-    ", paste0("    real ", names(composite_expressions), " = ", 
-              sapply(composite_expressions, function(expr) expr), 
-              ";\n", collapse = ""))}
-    stan_code<-paste0(stan_code,"}")
-}
+    stan_code <- paste0(stan_code, "}\n")
+  }
+  
 
 
 if (errstrc == 2) {
-  # Find the indices of non-fixed parameters
   non_fixed_indices <- which(paramsfix == 0)
   
-  stan_code <- paste0(stan_code, "
-parameters {\n", 
-                      paste0("    real<", sapply(non_fixed_indices, function(i) {
-                        # Construct lower and upper bound names
-                        LB_name <- paste0("params", i, "_LB")
-                        UB_name <- paste0("params", i, "_UB")
-                        
-                        # Retrieve their values, with default of NA if not set
-                        LB_value <- ifelse(exists(LB_name), get(LB_name), NA)
-                        UB_value <- ifelse(exists(UB_name), get(UB_name), NA)
-                        
-                        # Construct the lower and upper bounds conditionally
-                        bounds <- c()
-                        if (!is.na(LB_value)) bounds <- c(bounds, paste0("lower=", LB_value))
-                        if (!is.na(UB_value)) bounds <- c(bounds, paste0("upper=", UB_value))
-                        
-                        # Join the bounds with commas if both are present
-                        paste(bounds, collapse = ", ")
-                      }), "> ", params[paramsfix == 0], ";\n", collapse = ""), 
-                      paste0("    real<lower=0> sigma", 1:length(fitting_index), ";\n", collapse = ""),
-                      "}
-    
-transformed parameters {
-    real y[n_days + nfst_days, ", length(vars), "];
-    {
-    real theta[", length(params[paramsfix == 0]), "];
-    ", paste0("    theta[", 1:length(params[paramsfix == 0]), "] = ", params[paramsfix == 0], ";\n", collapse = "")) 
-  if (vars.init == 1)
-  {
-    stan_code <- paste0(stan_code,"y = integrate_ode_rk45(ode, y0, t0, ts, theta, x_r, x_i);")
-  }
-  if(vars.init == 0)
-  {
-    stan_code <- paste0(stan_code,"y = integrate_ode_rk45(ode, rep_array(0.0, ",length(vars),"), t0, ts, theta, x_r, x_i);")
-  }
-  stan_code <- paste0(stan_code,"
- }
-}
-    
-model {
-", prior_assignments, " ")
-  stan_code <- paste0(stan_code, paste0("sigma", 1:length(fitting_index), " ~ ", 
-                                        sapply(1:length(fitting_index), function(i) {
-                                          get(paste0("normalerror", i, "_prior"))
-                                        }), ";\n", collapse = ""), 
-                      "  
-  for (t in 1:n_days) {")
-  stan_code <- paste0(stan_code, paste0("    cases", 1:length(fitting_index), "[t] ~ normal(fmax(1e-6, ", fitting[1:length(fitting_index)], "), sigma", 1:length(fitting_index), ");\n", collapse = ""), 
-"}
-}
-    
-generated quantities {")
-      stan_code <- paste0(stan_code, paste0("    real pred_cases", 1:length(fitting_index), "[n_days + nfst_days];\n", collapse = ""),
-                      "    for (t in 1:n_days + nfst_days) {\n")
-      stan_code <- paste0(stan_code, paste0("        pred_cases", 1:length(fitting_index), "[t] = normal_rng(fmax(1e-6, ", fitting[1:length(fitting_index)], "), sigma", 1:length(fitting_index), ");\n", collapse = ""),
-                          "    }
-")
-  if (length(composite_expressions) > 0) {
-    stan_code <- paste0(stan_code,"
-    // Composite quantities
-    ", paste0("    real ", names(composite_expressions), " = ", 
-              sapply(composite_expressions, function(expr) expr), 
-              ";\n", collapse = ""))}
-stan_code<-paste0(stan_code,"}")
-}
-  
-if (errstrc == 3) {
-  # Find the indices of non-fixed parameters
-  non_fixed_indices <- which(paramsfix == 0)
-  
-  stan_code <- paste0(stan_code, "
-parameters {\n", 
-                      paste0("    real<", sapply(non_fixed_indices, function(i) {
-                        # Construct lower and upper bound names
-                        LB_name <- paste0("params", i, "_LB")
-                        UB_name <- ifelse(exists(paste0("params", i, "_UB")), paste0("params", i, "_UB"), NA)
-                        
-                        # Retrieve their values, with default of NA if not set
-                        LB_value <- ifelse(exists(LB_name), get(LB_name), NA)
-                        UB_value <- ifelse(exists(UB_name), get(UB_name), NA)
-                        
-                        # Construct the lower and upper bounds conditionally
-                        bounds <- c()
-                        if (!is.na(LB_value)) bounds <- c(bounds, paste0("lower=", LB_value))
-                        if (!is.na(UB_value)) bounds <- c(bounds, paste0("upper=", UB_value))
-                        
-                        # Join the bounds with commas if both are present
-                        paste(bounds, collapse = ", ")
-                      }), "> ", params[paramsfix == 0], ";\n", collapse = ""), 
-                      "\n }
-    
-transformed parameters {
-    real y[n_days + nfst_days, ", length(vars), "];
-    {
-    real theta[", length(params[paramsfix == 0]), "];
-    ", paste0("    theta[", 1:length(params[paramsfix == 0]), "] = ", params[paramsfix == 0], ";\n", collapse = ""))
+  stan_code <- paste0(stan_code, "parameters {\n", 
+  paste0(
+    "    real<",
+    sapply(non_fixed_indices, function(i) {
+      LB_name <- paste0("params", i, "_LB")
+      UB_name <- paste0("params", i, "_UB")
+      LB_value <- ifelse(exists(LB_name), get(LB_name), NA)
+      UB_value <- ifelse(exists(UB_name), get(UB_name), NA)
+      bounds <- c()
+      if (!is.na(LB_value)) bounds <- c(bounds, paste0("lower=", LB_value))
+      if (!is.na(UB_value)) bounds <- c(bounds, paste0("upper=", UB_value))
+      paste(bounds, collapse = ", ")
+    }),
+    "> ", params[paramsfix == 0], ";\n",
+    collapse = ""
+  ),
+  paste0("    real<lower=0> sigma", 1:length(fitting_index), ";\n", collapse = ""),
+  "}\ntransformed parameters {\n  array[n_days + nfst_days, ", length(vars), "] real y;\n",
+  if (vars.init == 0) paste0("  array[", length(vars), "] real init_ic = {", paste(Ic, collapse = ", "), "};\n") else "",
+  "  array[", length(params[paramsfix == 0]), "] real theta;\n",
+  paste0(
+    "  theta[", 1:length(params[paramsfix == 0]), "] = ", params[paramsfix == 0], ";\n",
+    collapse = ""
+  )
+)
+
   
   if (vars.init == 1) {
-    stan_code <- paste0(stan_code, "y = integrate_ode_rk45(ode, y0, t0, ts, theta, x_r, x_i);")
+    stan_code <- paste0(stan_code, "\n  y = integrate_ode_rk45(ode, y0, t0, ts, theta, x_r, x_i);\n")
+  } else if (vars.init == 0) {
+    stan_code <- paste0(stan_code, "\n  y = integrate_ode_rk45(ode, rep_array(0.0, ", length(vars), "), t0, ts, theta, x_r, x_i);\n")
   }
   
-  if (vars.init == 0) {
-    stan_code <- paste0(stan_code, "y = integrate_ode_rk45(ode, rep_array(0.0, ", length(vars), "), t0, ts, theta, x_r, x_i);")
-  }
+  stan_code <- paste0(stan_code, "}\nmodel {\n", prior_assignments, "\n")
   
-  stan_code <- paste0(stan_code, "
- }
-}
-    
-model {
-    ", prior_assignments, "
-  for (t in 1:n_days) {")
-  stan_code <- paste0(stan_code, paste0("    cases", 1:length(fitting_index), "[t] ~ poisson(fmax(1e-6, ", fitting[1:length(fitting_index)], "));\n", collapse = ""), 
-"}
-}
-    
-generated quantities {")
-  stan_code <- paste0(stan_code, paste0("    real pred_cases", 1:length(fitting_index), "[n_days + nfst_days];\n", collapse = ""),
-                      "    for (t in 1:n_days + nfst_days) {\n")
-  stan_code <- paste0(stan_code, paste0("        pred_cases", 1:length(fitting_index), "[t] = poisson_rng(fmax(1e-6, ", fitting[1:length(fitting_index)], "));\n", collapse = ""),
-                      "    }
-")
-if (length(composite_expressions) > 0) {
-stan_code <- paste0(stan_code,"
-    // Composite quantities
-    ", paste0("    real ", names(composite_expressions), " = ", 
-              sapply(composite_expressions, function(expr) expr), 
-              ";\n", collapse = ""))}
-  stan_code<-paste0(stan_code,"}")
+  stan_code <- paste0(stan_code,
+                      paste0("  sigma", 1:length(fitting_index), " ~ ",
+                             sapply(1:length(fitting_index), function(i) {
+                               get(paste0("normalerror", i, "_prior"))
+                             }), ";\n", collapse = ""),
+                      "\n  for (t in 1:n_days) {\n")
+  
+  stan_code <- paste0(stan_code,
+                      paste0("    cases", 1:length(fitting_index), "[t] ~ normal(fmax(1e-6, ", fitting[1:length(fitting_index)], "), sigma", 1:length(fitting_index), ");\n", collapse = ""),
+                      "  }\n}\n\n")
+  
+  stan_code <- paste0(stan_code, "generated quantities {\n",
+                      paste0("  array[n_days + nfst_days] real mu_cases", 1:length(fitting_index), ";\n", collapse = ""),
+                      paste0("  array[n_days + nfst_days] real pred_cases", 1:length(fitting_index), ";\n", collapse = ""),
+                      paste0("  array[n_days] real log_lik", 1:length(fitting_index), ";\n", collapse = ""),
+                      "  for (t in 1:(n_days + nfst_days)) {\n",
+                      paste0("    mu_cases", 1:length(fitting_index), "[t] = fmax(1e-6, ", fitting[1:length(fitting_index)], ");\n", collapse = ""),
+                      paste0("    pred_cases", 1:length(fitting_index), "[t] = normal_rng(mu_cases", 1:length(fitting_index), "[t], sigma", 1:length(fitting_index), ");\n", collapse = ""),
+                      "  }\n",
+                      "  for (t in 1:n_days) {\n",
+                      paste0("    log_lik", 1:length(fitting_index), "[t] = normal_lpdf(cases", 1:length(fitting_index), "[t] | mu_cases", 1:length(fitting_index), "[t], sigma", 1:length(fitting_index), ");\n", collapse = ""),
+                      "  }\n")
+  
+  if (length(composite_expressions) > 0) {
+  stan_code <- paste0(stan_code, "\n",
+                      paste0("  real ", names(composite_expressions), " = ",
+                             sapply(composite_expressions, function(expr) expr), ";\n", collapse = ""))
 }
 
+  
+  stan_code <- paste0(stan_code, "}\n")
+}
+
+  
+  if (errstrc == 3) {
+    non_fixed_indices <- which(paramsfix == 0)
+    
+    stan_code <- paste0(stan_code, "parameters {\n",
+                        paste0(
+                          "    real<",
+                          sapply(non_fixed_indices, function(i) {
+                            LB_name <- paste0("params", i, "_LB")
+                            UB_var <- paste0("params", i, "_UB")
+                            UB_name <- ifelse(exists(UB_var), UB_var, NA)
+                            
+                            LB_value <- ifelse(exists(LB_name), get(LB_name), NA)
+                            UB_value <- ifelse(!is.na(UB_name) && exists(UB_name), get(UB_name), NA)
+                            
+                            bounds <- c()
+                            if (!is.na(LB_value)) bounds <- c(bounds, paste0("lower=", LB_value))
+                            if (!is.na(UB_value)) bounds <- c(bounds, paste0("upper=", UB_value))
+                            paste(bounds, collapse = ", ")
+                          }),
+                          "> ", params[paramsfix == 0], ";\n",
+                          collapse = ""
+                        ),
+                        "}\ntransformed parameters {\n  array[n_days + nfst_days, ", length(vars), "] real y;\n",
+                        if (vars.init == 0) paste0("  array[", length(vars), "] real init_ic = {", paste(Ic, collapse = ", "), "};\n") else "",
+                        "  {\n    array[", length(params[paramsfix == 0]), "] real theta;\n",
+                        paste0(
+                          "    theta[", 1:length(params[paramsfix == 0]), "] = ", params[paramsfix == 0], ";\n",
+                          collapse = ""
+                        ))
+    
+    if (vars.init == 1) {
+      stan_code <- paste0(stan_code, "    y = integrate_ode_rk45(ode, y0, t0, ts, theta, x_r, x_i);\n")
+    } else if (vars.init == 0) {
+      stan_code <- paste0(stan_code, "    y = integrate_ode_rk45(ode, rep_array(0.0, ", length(vars), "), t0, ts, theta, x_r, x_i);\n")
+    }
+    
+    stan_code <- paste0(stan_code, "  }\n}\nmodel {\n", prior_assignments, "\n  for (t in 1:n_days) {\n")
+    
+    stan_code <- paste0(stan_code,
+                        paste0("    cases", 1:length(fitting_index), "[t] ~ poisson(fmax(1e-6, ", fitting[1:length(fitting_index)], "));\n", collapse = ""),
+                        "  }\n}\n\n")
+    
+    stan_code <- paste0(stan_code, "generated quantities {\n",
+                        paste0("  array[n_days + nfst_days] real mu_cases", 1:length(fitting_index), ";\n", collapse = ""),
+                        paste0("  array[n_days + nfst_days] real pred_cases", 1:length(fitting_index), ";\n", collapse = ""),
+                        paste0("  array[n_days] real log_lik", 1:length(fitting_index), ";\n", collapse = ""),
+                        "  for (t in 1:(n_days + nfst_days)) {\n",
+                        paste0("    mu_cases", 1:length(fitting_index), "[t] = fmax(1e-6, ", fitting[1:length(fitting_index)], ");\n", collapse = ""),
+                        paste0("    pred_cases", 1:length(fitting_index), "[t] = poisson_rng(mu_cases", 1:length(fitting_index), "[t]);\n", collapse = ""),
+                        "  }\n",
+                        "  for (t in 1:n_days) {\n",
+                        paste0("    log_lik", 1:length(fitting_index), "[t] = poisson_lpmf(cases", 1:length(fitting_index), "[t] | mu_cases", 1:length(fitting_index), "[t]);\n", collapse = ""),
+                        "  }\n")
+    
+    if (length(composite_expressions) > 0) {
+      stan_code <- paste0(stan_code, "\n",
+                          paste0("  real ", names(composite_expressions), " = ",
+                                 sapply(composite_expressions, function(expr) expr), ";\n", collapse = ""))
+    }
+    
+    stan_code <- paste0(stan_code, "}\n")
+  }
+  
+  
+  # Write the Stan code to a file
+  writeLines(stan_code, stan_file)
+  
   # Return the file name
   return(stan_code)
 }
